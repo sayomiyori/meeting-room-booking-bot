@@ -115,8 +115,20 @@ async def require_telegram_user(
 ) -> TelegramUser:
     settings = get_settings()
 
-    # Mock only when DEBUG=true — production validation path always active otherwise
-    if settings.debug and x_debug_telegram_id is not None and not x_telegram_init_data:
+    # Fail closed: never allow debug impersonation once a public URL is configured
+    if settings.debug and settings.public_base_url and x_debug_telegram_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Debug-авторизация отключена при PUBLIC_BASE_URL",
+        )
+
+    # Mock only when DEBUG=true and no public deploy URL — production path always validates HMAC
+    if (
+        settings.debug
+        and not settings.public_base_url
+        and x_debug_telegram_id is not None
+        and not x_telegram_init_data
+    ):
         return TelegramUser(
             id=x_debug_telegram_id,
             first_name="Debug",
