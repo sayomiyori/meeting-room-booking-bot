@@ -12,6 +12,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.core.config import get_settings
+from backend.core.logging_safe import redact_secrets
 from backend.routers import bookings, health, rooms
 from backend.routers.bookings import limiter
 from backend.services.scheduler import start_scheduler, stop_scheduler
@@ -63,8 +64,11 @@ async def lifespan(app: FastAPI):
             if settings.public_base_url:
                 await bot.delete_webhook(drop_pending_updates=False)
             await bot.session.close()
-        except Exception:
-            logger.exception("bot_shutdown_error")
+        except Exception as exc:
+            logger.error(
+                "bot_shutdown_error",
+                error=redact_secrets(str(exc), settings.bot_token),
+            )
 
 
 def create_app() -> FastAPI:
@@ -85,12 +89,22 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(_request: Request, exc: RequestValidationError):
-        return JSONResponse(status_code=422, content={"detail": "Ошибка валидации", "errors": exc.errors()})
+        payload: dict = {"detail": "Ошибка валидации"}
+        if settings.debug:
+            payload["errors"] = exc.errors()
+        return JSONResponse(status_code=422, content=payload)
 
     @app.exception_handler(Exception)
     async def unhandled(_request: Request, exc: Exception):
-        logger.exception("unhandled_error", error=str(exc))
-        detail = str(exc) if settings.debug else "Внутренняя ошибка сервера"
+        logger.error(
+            "unhandled_error",
+            error=redact_secrets(str(exc), settings.bot_token),
+        )
+        detail = (
+            redact_secrets(str(exc), settings.bot_token)
+            if settings.debug
+            else "Внутренняя ошибка сервера"
+        )
         return JSONResponse(status_code=500, content={"detail": detail})
 
     app.include_router(health.router)

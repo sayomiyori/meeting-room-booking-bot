@@ -1,6 +1,7 @@
 from aiogram import Dispatcher
 from aiogram.types import Update
 from fastapi import APIRouter, Header, HTTPException, Request, status
+import hmac
 
 from backend.core.config import get_settings
 from backend.services.notifications import get_bot
@@ -20,7 +21,13 @@ async def telegram_webhook(
     ),
 ) -> dict[str, bool]:
     settings = get_settings()
-    if not settings.webhook_secret or x_telegram_bot_api_secret_token != settings.webhook_secret:
+    provided = x_telegram_bot_api_secret_token or ""
+    expected = settings.webhook_secret or ""
+    try:
+        secret_ok = bool(expected) and hmac.compare_digest(provided, expected)
+    except (TypeError, ValueError):
+        secret_ok = False
+    if not secret_ok:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook secret")
 
     payload = await request.json()

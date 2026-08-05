@@ -4,6 +4,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from backend.core.config import get_settings
+from backend.core.logging_safe import redact_secrets
 from backend.schemas import BookingOut
 
 logger = structlog.get_logger(__name__)
@@ -36,6 +37,11 @@ def format_booking_message(booking: BookingOut, *, title: str) -> str:
     )
 
 
+def _log_notify_failure(event: str, telegram_id: int, exc: Exception) -> None:
+    token = get_settings().bot_token
+    logger.error(event, telegram_id=telegram_id, error=redact_secrets(str(exc), token))
+
+
 async def notify_booking_created(telegram_id: int, booking: BookingOut) -> None:
     try:
         bot = get_bot()
@@ -43,8 +49,8 @@ async def notify_booking_created(telegram_id: int, booking: BookingOut) -> None:
             chat_id=telegram_id,
             text=format_booking_message(booking, title="Бронь подтверждена"),
         )
-    except Exception:
-        logger.exception("failed_to_send_booking_confirmation", telegram_id=telegram_id)
+    except Exception as exc:
+        _log_notify_failure("failed_to_send_booking_confirmation", telegram_id, exc)
 
 
 async def notify_booking_conflict(telegram_id: int) -> None:
@@ -54,8 +60,8 @@ async def notify_booking_conflict(telegram_id: int) -> None:
             chat_id=telegram_id,
             text="Не удалось забронировать: слот только что заняли. Выберите другое время.",
         )
-    except Exception:
-        logger.exception("failed_to_send_conflict_notice", telegram_id=telegram_id)
+    except Exception as exc:
+        _log_notify_failure("failed_to_send_conflict_notice", telegram_id, exc)
 
 
 async def notify_reminder(telegram_id: int, booking: BookingOut) -> None:
@@ -65,5 +71,5 @@ async def notify_reminder(telegram_id: int, booking: BookingOut) -> None:
             chat_id=telegram_id,
             text=format_booking_message(booking, title="Напоминание о брони"),
         )
-    except Exception:
-        logger.exception("failed_to_send_reminder", telegram_id=telegram_id)
+    except Exception as exc:
+        _log_notify_failure("failed_to_send_reminder", telegram_id, exc)

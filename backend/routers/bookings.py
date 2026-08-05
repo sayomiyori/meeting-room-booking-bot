@@ -3,10 +3,11 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.config import get_settings
 from backend.core.database import get_db
 from backend.core.exceptions import AppError, ConflictError
 from backend.core.security import TelegramUser, require_telegram_user
-from backend.schemas import BookingCreate, BookingOut, MessageOut
+from backend.schemas import BookingCreate, BookingOut
 from backend.services.booking import BookingService
 from backend.services.notifications import notify_booking_conflict, notify_booking_created
 
@@ -15,10 +16,12 @@ router = APIRouter(prefix="/api/bookings", tags=["bookings"])
 
 
 def _telegram_rate_key(request: Request) -> str:
-    # Prefer authenticated id when present in debug header; fallback IP
-    debug_id = request.headers.get("X-Debug-Telegram-Id")
-    if debug_id:
-        return f"tg:{debug_id}"
+    settings = get_settings()
+    # Debug header only when DEBUG=true — otherwise clients could rotate buckets
+    if settings.debug:
+        debug_id = request.headers.get("X-Debug-Telegram-Id")
+        if debug_id:
+            return f"tg:{debug_id}"
     init_data = request.headers.get("X-Telegram-Init-Data", "")
     if "user=" in init_data:
         return f"init:{hash(init_data) % 10_000_000}"
