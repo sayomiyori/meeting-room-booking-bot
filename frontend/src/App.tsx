@@ -1,5 +1,5 @@
 import type { ButtonHTMLAttributes } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   api,
@@ -37,12 +37,15 @@ function roomStatusFromSlots(slots: SlotPublic[]): SlotStatus {
   return busy.status;
 }
 
-function formatTime(iso: string) {
-  return new Date(iso).toLocaleTimeString("ru-RU", {
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "UTC",
-  });
+/** Format UTC clock; exclusive end at midnight → 24:00 (not 00:00 of next day). */
+function formatTime(iso: string, role: "start" | "end" = "start") {
+  const d = new Date(iso);
+  const hours = d.getUTCHours();
+  const minutes = d.getUTCMinutes();
+  if (role === "end" && hours === 0 && minutes === 0) {
+    return "24:00";
+  }
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
 function GhostButton({
@@ -81,10 +84,58 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const stepRef = useRef(step);
+  const roomRef = useRef(selectedRoom);
+  const dateRef = useRef(selectedDate);
+  stepRef.current = step;
+  roomRef.current = selectedRoom;
+  dateRef.current = selectedDate;
+
   const dates = useMemo(
     () => Array.from({ length: 14 }, (_, i) => addDaysISO(todayISO(), i)),
     [],
   );
+
+  const loadRooms = useCallback(async () => {
+    const list = await api.rooms();
+    setRooms(list);
+    const day = todayISO();
+    const entries = await Promise.all(
+      list.map(async (room) => {
+        const res = await api.slots(room.id, day);
+        return [room.id, roomStatusFromSlots(res.slots)] as const;
+      }),
+    );
+    setStatuses(Object.fromEntries(entries));
+  }, []);
+
+  const loadSlotsFor = useCallback(async (room: Room, date: string) => {
+    const res = await api.slots(room.id, date);
+    setSlots(res.slots);
+    setSelectedDate(date);
+  }, []);
+
+  const loadMine = useCallback(async () => {
+    setMine(await api.myBookings());
+  }, []);
+
+  const refetchCurrentScreen = useCallback(async () => {
+    if (!hasTelegramContext()) return;
+    try {
+      const current = stepRef.current;
+      if (current === "rooms" || current === "date") {
+        await loadRooms();
+      } else if ((current === "slots" || current === "confirm") && roomRef.current) {
+        await loadSlotsFor(roomRef.current, dateRef.current);
+        await loadRooms();
+      } else if (current === "mine") {
+        await loadMine();
+        await loadRooms();
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось обновить данные");
+    }
+  }, [loadMine, loadRooms, loadSlotsFor]);
 
   useEffect(() => {
     initTelegramChrome();
@@ -93,23 +144,37 @@ export default function App() {
     setReady(true);
     if (!ok) return;
 
-    (async () => {
+    void (async () => {
       try {
-        const list = await api.rooms();
-        setRooms(list);
-        const day = todayISO();
-        const entries = await Promise.all(
-          list.map(async (room) => {
-            const res = await api.slots(room.id, day);
-            return [room.id, roomStatusFromSlots(res.slots)] as const;
-          }),
-        );
-        setStatuses(Object.fromEntries(entries));
+        await loadRooms();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Не удалось загрузить комнаты");
       }
     })();
-  }, []);
+  }, [loadRooms]);
+
+  // Refetch when returning from Telegram chat / another app (bot cancel, etc.)
+  useEffect(() => {
+    if (!allowed) return;
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        void refetchCurrentScreen();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    const wa = window.Telegram?.WebApp;
+    const onViewport = () => {
+      void refetchCurrentScreen();
+    };
+    wa?.onEvent?.("viewportChanged", onViewport);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      wa?.offEvent?.("viewportChanged", onViewport);
+    };
+  }, [allowed, refetchCurrentScreen]);
 
   async function openDate(room: Room) {
     setSelectedRoom(room);
@@ -119,12 +184,10 @@ export default function App() {
 
   async function loadSlots(date: string) {
     if (!selectedRoom) return;
-    setSelectedDate(date);
     setBusy(true);
     setError(null);
     try {
-      const res = await api.slots(selectedRoom.id, date);
-      setSlots(res.slots);
+      await loadSlotsFor(selectedRoom, date);
       setPickStart(null);
       setPickEnd(null);
       setStep("slots");
@@ -138,7 +201,6 @@ export default function App() {
   function selectSlot(slot: SlotPublic) {
     if (slot.status !== "free") return;
     setPickStart(slot.start);
-    // default 1 hour or until slot end
     const start = new Date(slot.start).getTime();
     const endCap = new Date(slot.end).getTime();
     const oneHour = start + 60 * 60 * 1000;
@@ -165,7 +227,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      setMine(await api.myBookings());
+      await loadMine();
       setStep("mine");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Не удалось загрузить брони");
@@ -179,7 +241,7 @@ export default function App() {
     setError(null);
     try {
       await api.cancelBooking(id);
-      setMine(await api.myBookings());
+      await loadMine();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Не удалось отменить");
     } finally {
@@ -312,7 +374,7 @@ export default function App() {
                     className="flex items-center justify-between rounded-[12px] bg-panel px-3 py-3 text-left disabled:opacity-50"
                   >
                     <span className="text-sm font-medium">
-                      {formatTime(slot.start)} — {formatTime(slot.end)}
+                      {formatTime(slot.start, "start")} — {formatTime(slot.end, "end")}
                     </span>
                     <OccupancyIndicator status={slot.status} />
                   </button>
@@ -330,7 +392,8 @@ export default function App() {
               <p className="mt-2 text-sm text-muted">
                 {selectedRoom.name}
                 <br />
-                {formatTime(pickStart)} — {formatTime(pickEnd)} UTC · {selectedDate}
+                {formatTime(pickStart, "start")} — {formatTime(pickEnd, "end")} UTC ·{" "}
+                {selectedDate}
               </p>
               <div className="mt-5 flex gap-2">
                 <GhostButton className="flex-1" disabled={busy} onClick={confirmBooking}>
@@ -352,7 +415,7 @@ export default function App() {
                   <h3 className="font-semibold">{b.room_name ?? `Комната #${b.room_id}`}</h3>
                   <p className="mt-1 text-sm text-muted">
                     {new Date(b.start).toLocaleString("ru-RU", { timeZone: "UTC" })} —{" "}
-                    {formatTime(b.end)} UTC
+                    {formatTime(b.end, "end")} UTC
                   </p>
                   <GhostButton className="mt-3" disabled={busy} onClick={() => cancel(b.id)}>
                     Отменить

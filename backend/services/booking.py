@@ -32,6 +32,47 @@ def booking_to_out(booking: Booking) -> BookingOut:
     )
 
 
+def build_day_slots(
+    day_start: datetime,
+    day_end: datetime,
+    busy_intervals: list[tuple[datetime, datetime]],
+    *,
+    now: datetime,
+) -> list[SlotPublic]:
+    """Merge busy bookings with free gaps for [day_start, day_end).
+
+    Never emits zero-length intervals. An empty day yields exactly one free
+    slot covering the full half-open day range.
+    """
+    if day_end <= day_start:
+        return []
+
+    busy_slots: list[SlotPublic] = []
+    for start, end in sorted(busy_intervals, key=lambda pair: pair[0]):
+        clipped_start = max(start, day_start)
+        clipped_end = min(end, day_end)
+        if clipped_end <= clipped_start:
+            continue
+        remaining = (end - now).total_seconds()
+        status = SlotStatus.busy
+        if remaining > 0 and remaining <= 30 * 60:
+            status = SlotStatus.soon_free
+        busy_slots.append(SlotPublic(start=clipped_start, end=clipped_end, status=status))
+
+    slots: list[SlotPublic] = []
+    cursor = day_start
+    for busy in busy_slots:
+        if busy.start > cursor:
+            slots.append(SlotPublic(start=cursor, end=busy.start, status=SlotStatus.free))
+        slots.append(busy)
+        cursor = max(cursor, busy.end)
+    if cursor < day_end:
+        slots.append(SlotPublic(start=cursor, end=day_end, status=SlotStatus.free))
+
+    # Defensive: drop any accidental zero-length rows
+    return [s for s in slots if s.end > s.start]
+
+
 class RoomService:
     def __init__(self, session: AsyncSession) -> None:
         self.rooms = RoomRepository(session)
@@ -50,30 +91,10 @@ class RoomService:
         bookings = await self.bookings.list_for_room_on_day(room_id, day_start, day_end)
         now = datetime.now(UTC)
 
-        # Public DTO only — never expose owner PII
-        busy_slots: list[SlotPublic] = []
-        for booking in bookings:
-            start = max(booking.during.lower, day_start)
-            end = min(booking.during.upper, day_end)
-            if end <= start:
-                continue
-            remaining = (booking.during.upper - now).total_seconds()
-            status = SlotStatus.busy
-            if remaining > 0 and remaining <= 30 * 60:
-                status = SlotStatus.soon_free
-            busy_slots.append(SlotPublic(start=start, end=end, status=status))
-
-        # Fill free gaps for the calendar day (00:00–24:00 UTC of selected date)
-        slots: list[SlotPublic] = []
-        cursor = day_start
-        for busy in busy_slots:
-            if busy.start > cursor:
-                slots.append(SlotPublic(start=cursor, end=busy.start, status=SlotStatus.free))
-            slots.append(busy)
-            cursor = max(cursor, busy.end)
-        if cursor < day_end:
-            slots.append(SlotPublic(start=cursor, end=day_end, status=SlotStatus.free))
-
+        busy_intervals = [
+            (booking.during.lower, booking.during.upper) for booking in bookings
+        ]
+        slots = build_day_slots(day_start, day_end, busy_intervals, now=now)
         return SlotsResponse(room_id=room_id, date=day.isoformat(), slots=slots)
 
 

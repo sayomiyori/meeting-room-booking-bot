@@ -36,6 +36,7 @@ def settings(monkeypatch):
     monkeypatch.setenv("DEBUG", "true")
     monkeypatch.setenv("BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("WEBHOOK_SECRET", "test-secret")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "")
     get_settings.cache_clear()
     yield get_settings()
     get_settings.cache_clear()
@@ -194,3 +195,50 @@ def test_validate_init_data_replay():
     init = make_init_data(7, auth_age_seconds=10_000)
     with pytest.raises(Exception):
         validate_init_data(init, BOT_TOKEN, 300)
+
+
+def test_empty_day_slots_cover_full_day():
+    from backend.services.booking import build_day_slots
+
+    day_start = datetime(2026, 8, 20, tzinfo=UTC)
+    day_end = day_start + timedelta(days=1)
+    slots = build_day_slots(day_start, day_end, [], now=day_start)
+    assert len(slots) == 1
+    assert slots[0].status.value == "free"
+    assert slots[0].start == day_start
+    assert slots[0].end == day_end
+    assert slots[0].end > slots[0].start
+
+
+def test_day_with_one_booking_has_two_free_gaps():
+    from backend.services.booking import build_day_slots
+
+    day_start = datetime(2026, 8, 20, tzinfo=UTC)
+    day_end = day_start + timedelta(days=1)
+    busy_start = day_start + timedelta(hours=10)
+    busy_end = day_start + timedelta(hours=11)
+    slots = build_day_slots(
+        day_start,
+        day_end,
+        [(busy_start, busy_end)],
+        now=day_start,
+    )
+    assert [s.status.value for s in slots] == ["free", "busy", "free"]
+    assert slots[0].start == day_start and slots[0].end == busy_start
+    assert slots[1].start == busy_start and slots[1].end == busy_end
+    assert slots[2].start == busy_end and slots[2].end == day_end
+    assert all(s.end > s.start for s in slots)
+
+
+@pytest.mark.asyncio
+async def test_slots_api_empty_day_full_range(client, room_id):
+    day = "2030-01-15"
+    res = await client.get(f"/api/rooms/{room_id}/slots", params={"date": day})
+    assert res.status_code == 200
+    body = res.json()
+    assert len(body["slots"]) == 1
+    slot = body["slots"][0]
+    assert slot["status"] == "free"
+    assert slot["start"].startswith("2030-01-15T00:00:00")
+    assert slot["end"].startswith("2030-01-16T00:00:00")
+    assert slot["start"] != slot["end"]

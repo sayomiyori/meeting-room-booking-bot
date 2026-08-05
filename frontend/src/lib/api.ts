@@ -31,6 +31,8 @@ type TelegramWebApp = {
   expand: () => void;
   setHeaderColor: (color: string) => void;
   setBackgroundColor: (color: string) => void;
+  onEvent?: (eventType: string, callback: () => void) => void;
+  offEvent?: (eventType: string, callback: () => void) => void;
   HapticFeedback?: { impactOccurred: (style: string) => void };
 };
 
