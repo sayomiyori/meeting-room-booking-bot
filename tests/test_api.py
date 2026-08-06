@@ -189,6 +189,46 @@ async def test_cancel_foreign_booking_forbidden(client, room_id):
 
 
 @pytest.mark.asyncio
+async def test_cancel_via_service_sends_notification(db_engine, monkeypatch):
+    from backend.core.security import TelegramUser
+    from backend.services.booking import BookingService
+    from backend.services.notifications import format_booking_message
+
+    sent: list[dict] = []
+
+    class FakeBot:
+        async def send_message(self, chat_id: int, text: str, **kwargs):
+            sent.append({"chat_id": chat_id, "text": text})
+
+    monkeypatch.setattr("backend.services.notifications.get_bot", lambda: FakeBot())
+
+    user = TelegramUser(id=42, first_name="Test", last_name="User", username="tester")
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
+    day = future_office_day(1)
+    start = office_instant(day, 10)
+    end = office_instant(day, 11)
+
+    async with session_factory() as session:
+        from backend.services.booking import RoomService
+
+        rooms = await RoomService(session).list_rooms()
+        assert rooms
+        created = await BookingService(session).create(rooms[0].id, start, end, user)
+        await session.commit()
+        booking_id = created.id
+
+    async with session_factory() as session:
+        out = await BookingService(session).cancel(booking_id, user)
+        await session.commit()
+
+    assert len(sent) == 1
+    assert sent[0]["chat_id"] == 42
+    assert sent[0]["text"] == format_booking_message(out, title="Бронь отменена")
+    assert f"ID брони: {booking_id}" in sent[0]["text"]
+    assert "Бронь отменена" in sent[0]["text"]
+
+
+@pytest.mark.asyncio
 async def test_missing_init_data_rejected(client, room_id, monkeypatch):
     monkeypatch.setenv("DEBUG", "false")
     get_settings.cache_clear()

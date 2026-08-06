@@ -16,6 +16,7 @@ from backend.core.security import TelegramUser
 from backend.models import Booking
 from backend.repositories import BookingRepository, RoomRepository
 from backend.schemas import BookingOut, SlotPublic, SlotStatus, SlotsResponse
+from backend.services.notifications import notify_booking_canceled
 
 
 def _ensure_aware(dt: datetime) -> datetime:
@@ -254,4 +255,6 @@ class BookingService:
         if booking.telegram_id != user.id:
             raise ForbiddenError("Нельзя отменить чужую бронь")
         booking = await self.bookings.cancel(booking)
-        return booking_to_out(booking)
+        out = booking_to_out(booking)
+        await notify_booking_canceled(user.id, out)
+        return out

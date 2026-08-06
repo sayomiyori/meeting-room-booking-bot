@@ -53,6 +53,17 @@ async def notify_booking_created(telegram_id: int, booking: BookingOut) -> None:
         _log_notify_failure("failed_to_send_booking_confirmation", telegram_id, exc)
 
 
+async def notify_booking_canceled(telegram_id: int, booking: BookingOut) -> None:
+    try:
+        bot = get_bot()
+        await bot.send_message(
+            chat_id=telegram_id,
+            text=format_booking_message(booking, title="Бронь отменена"),
+        )
+    except Exception as exc:
+        _log_notify_failure("failed_to_send_booking_cancellation", telegram_id, exc)
+
+
 async def notify_booking_conflict(telegram_id: int) -> None:
     try:
         bot = get_bot()
