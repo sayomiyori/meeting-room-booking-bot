@@ -32,6 +32,42 @@ def booking_to_out(booking: Booking) -> BookingOut:
     )
 
 
+def ceil_to_minutes(dt: datetime, step_minutes: int = 30) -> datetime:
+    """Round *up* to the next step boundary (already aligned → unchanged)."""
+    dt = _ensure_aware(dt).replace(second=0, microsecond=0)
+    remainder = dt.minute % step_minutes
+    if remainder == 0:
+        return dt
+    return dt + timedelta(minutes=step_minutes - remainder)
+
+
+def bookable_from(
+    day_start: datetime,
+    day_end: datetime,
+    now: datetime,
+    *,
+    step_minutes: int = 30,
+) -> datetime | None:
+    """Earliest bookable instant for the day, or None if no free time remains."""
+    now = _ensure_aware(now)
+    day_start = _ensure_aware(day_start)
+    day_end = _ensure_aware(day_end)
+
+    if now.date() > day_start.date():
+        # Requested calendar day is entirely in the past
+        return None
+    if now.date() < day_start.date():
+        return day_start
+
+    # Today (UTC)
+    if now >= day_end:
+        return None
+    start = max(day_start, ceil_to_minutes(now, step_minutes))
+    if start >= day_end:
+        return None
+    return start
+
+
 def build_day_slots(
     day_start: datetime,
     day_end: datetime,
@@ -41,8 +77,9 @@ def build_day_slots(
 ) -> list[SlotPublic]:
     """Merge busy bookings with free gaps for [day_start, day_end).
 
-    Never emits zero-length intervals. An empty day yields exactly one free
-    slot covering the full half-open day range.
+    For *today*, free gaps start at ceil_30(now), not midnight — so the UI
+    never offers past times. If the whole day has passed, free gaps are omitted.
+    Never emits zero-length intervals.
     """
     if day_end <= day_start:
         return []
@@ -59,17 +96,25 @@ def build_day_slots(
             status = SlotStatus.soon_free
         busy_slots.append(SlotPublic(start=clipped_start, end=clipped_end, status=status))
 
+    available = bookable_from(day_start, day_end, now)
+    if available is None:
+        return [s for s in busy_slots if s.end > s.start]
+
     slots: list[SlotPublic] = []
-    cursor = day_start
+    cursor = available
     for busy in busy_slots:
+        if busy.end <= cursor:
+            # Entirely in the past relative to bookable window — still show busy
+            slots.append(busy)
+            continue
         if busy.start > cursor:
             slots.append(SlotPublic(start=cursor, end=busy.start, status=SlotStatus.free))
+        # Clip busy display start for ordering; keep full busy interval in list
         slots.append(busy)
         cursor = max(cursor, busy.end)
     if cursor < day_end:
         slots.append(SlotPublic(start=cursor, end=day_end, status=SlotStatus.free))
 
-    # Defensive: drop any accidental zero-length rows
     return [s for s in slots if s.end > s.start]
 
 

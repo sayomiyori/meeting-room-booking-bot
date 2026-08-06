@@ -234,6 +234,43 @@ def test_day_with_one_booking_has_two_free_gaps():
     assert all(s.end > s.start for s in slots)
 
 
+def test_today_free_slots_start_at_ceil_30_of_now():
+    from backend.schemas import SlotStatus
+    from backend.services.booking import build_day_slots
+
+    day_start = datetime(2026, 8, 6, tzinfo=UTC)
+    day_end = day_start + timedelta(days=1)
+    now = datetime(2026, 8, 6, 9, 28, tzinfo=UTC)
+    slots = build_day_slots(day_start, day_end, [], now=now)
+    free = [s for s in slots if s.status == SlotStatus.free]
+    assert len(free) == 1
+    assert free[0].start == datetime(2026, 8, 6, 9, 30, tzinfo=UTC)
+    assert free[0].end == day_end
+    assert free[0].start >= now
+
+
+def test_today_past_end_of_day_has_no_free_slots():
+    from backend.schemas import SlotStatus
+    from backend.services.booking import build_day_slots
+
+    day_start = datetime(2026, 8, 6, tzinfo=UTC)
+    day_end = day_start + timedelta(days=1)
+    now = day_end
+    slots = build_day_slots(day_start, day_end, [], now=now)
+    assert slots == []
+    assert all(s.status != SlotStatus.free for s in slots)
+
+
+def test_ceil_to_minutes_aligned_unchanged():
+    from backend.services.booking import ceil_to_minutes
+
+    aligned = datetime(2026, 8, 6, 9, 0, tzinfo=UTC)
+    assert ceil_to_minutes(aligned, 30) == aligned
+    assert ceil_to_minutes(datetime(2026, 8, 6, 9, 28, tzinfo=UTC), 30) == datetime(
+        2026, 8, 6, 9, 30, tzinfo=UTC
+    )
+
+
 @pytest.mark.asyncio
 async def test_slots_api_empty_day_full_range(client, room_id):
     day = "2030-01-15"
