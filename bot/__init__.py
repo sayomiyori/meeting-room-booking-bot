@@ -4,6 +4,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, status
 import hmac
 
 from backend.core.config import get_settings
+from backend.routers.bookings import limiter
 from backend.services.notifications import get_bot
 from bot.handlers import router as commands_router
 
@@ -14,6 +15,7 @@ webhook_router = APIRouter(tags=["telegram"])
 
 
 @webhook_router.post("/telegram/webhook")
+@limiter.limit("30/minute")
 async def telegram_webhook(
     request: Request,
     x_telegram_bot_api_secret_token: str | None = Header(
