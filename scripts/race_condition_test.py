@@ -2,11 +2,18 @@
 Concurrent booking race: N parallel POSTs for the same slot.
 Exactly one must succeed (201); the rest must be 409 (EXCLUDE constraint).
 
-Usage (from repo root, with app+postgres up or DATABASE_URL reachable):
+Hits POST /api/bookings directly (same contract as the Mini App).
 
-  DEBUG=true python scripts/race_condition_test.py
+Auth: X-Debug-Telegram-Id only works when the *app* has DEBUG=true and an empty
+PUBLIC_BASE_URL (fail-closed once a public/tunnel URL is set). Setting those
+vars only on the client process is not enough.
 
-Requires DEBUG=true so X-Debug-Telegram-Id auth works.
+  # App must be running with empty PUBLIC_BASE_URL, e.g. local uvicorn:
+  PUBLIC_BASE_URL= DEBUG=true uvicorn ...
+  python scripts/race_condition_test.py
+
+  # Or a dedicated .env.test without PUBLIC_BASE_URL for local race runs,
+  # so the tunnel .env stays untouched.
 """
 
 from __future__ import annotations
@@ -31,7 +38,10 @@ async def main() -> None:
             raise SystemExit("No rooms seeded")
         room_id = rooms[0]["id"]
 
-        start = (datetime.now(UTC) + timedelta(days=5)).replace(minute=0, second=0, microsecond=0)
+        # 10:00 UTC = 13:00 MSK — always inside office hours 09–18 MSK
+        start = (datetime.now(UTC) + timedelta(days=5)).replace(
+            hour=10, minute=0, second=0, microsecond=0
+        )
         end = start + timedelta(hours=1)
         payload = {
             "room_id": room_id,

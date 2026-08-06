@@ -1,8 +1,9 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 import hmac
 import json
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -16,6 +17,16 @@ from backend.main import create_app
 
 
 BOT_TOKEN = "123456:TEST_TOKEN_FOR_UNIT_TESTS"
+OFFICE_TZ = ZoneInfo("Europe/Moscow")
+
+
+def office_instant(day: date, hour: int, minute: int = 0) -> datetime:
+    """Wall-clock time in Europe/Moscow → UTC instant."""
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=OFFICE_TZ).astimezone(UTC)
+
+
+def future_office_day(days: int = 1) -> date:
+    return (datetime.now(OFFICE_TZ) + timedelta(days=days)).date()
 
 
 def make_init_data(user_id: int = 42, *, auth_age_seconds: int = 10) -> str:
@@ -104,16 +115,16 @@ async def test_health(client):
 
 @pytest.mark.asyncio
 async def test_slots_have_no_pii(client, room_id):
-    day = (datetime.now(UTC) + timedelta(days=1)).date().isoformat()
-    start = datetime.now(UTC).replace(microsecond=0) + timedelta(days=1, hours=3)
-    end = start + timedelta(hours=1)
+    day = future_office_day(1)
+    start = office_instant(day, 10)
+    end = office_instant(day, 11)
     init = make_init_data(1001)
     await client.post(
         "/api/bookings",
         headers={"X-Telegram-Init-Data": init},
         json={"room_id": room_id, "start": start.isoformat(), "end": end.isoformat()},
     )
-    slots = (await client.get(f"/api/rooms/{room_id}/slots", params={"date": day})).json()
+    slots = (await client.get(f"/api/rooms/{room_id}/slots", params={"date": day.isoformat()})).json()
     for slot in slots["slots"]:
         assert set(slot.keys()) == {"start", "end", "status"}
         assert "user_display_name" not in slot
@@ -134,8 +145,9 @@ async def test_booking_rejects_past(client, room_id):
 
 @pytest.mark.asyncio
 async def test_booking_rejects_bad_room(client):
-    start = datetime.now(UTC) + timedelta(days=1)
-    end = start + timedelta(hours=1)
+    day = future_office_day(1)
+    start = office_instant(day, 10)
+    end = office_instant(day, 11)
     res = await client.post(
         "/api/bookings",
         headers={"X-Debug-Telegram-Id": "42"},
@@ -146,7 +158,8 @@ async def test_booking_rejects_bad_room(client):
 
 @pytest.mark.asyncio
 async def test_booking_rejects_short_duration(client, room_id):
-    start = datetime.now(UTC) + timedelta(days=1)
+    day = future_office_day(1)
+    start = office_instant(day, 10)
     end = start + timedelta(minutes=5)
     res = await client.post(
         "/api/bookings",
@@ -158,8 +171,9 @@ async def test_booking_rejects_short_duration(client, room_id):
 
 @pytest.mark.asyncio
 async def test_cancel_foreign_booking_forbidden(client, room_id):
-    start = datetime.now(UTC) + timedelta(days=2, hours=4)
-    end = start + timedelta(hours=1)
+    day = future_office_day(2)
+    start = office_instant(day, 10)
+    end = office_instant(day, 11)
     create = await client.post(
         "/api/bookings",
         headers={"X-Debug-Telegram-Id": "111"},
@@ -178,8 +192,9 @@ async def test_cancel_foreign_booking_forbidden(client, room_id):
 async def test_missing_init_data_rejected(client, room_id, monkeypatch):
     monkeypatch.setenv("DEBUG", "false")
     get_settings.cache_clear()
-    start = datetime.now(UTC) + timedelta(days=3)
-    end = start + timedelta(hours=1)
+    day = future_office_day(3)
+    start = office_instant(day, 10)
+    end = office_instant(day, 11)
     res = await client.post(
         "/api/bookings",
         json={"room_id": room_id, "start": start.isoformat(), "end": end.isoformat()},
@@ -201,11 +216,11 @@ def test_validate_init_data_replay():
         validate_init_data(init, BOT_TOKEN, 300)
 
 
-def test_empty_day_slots_cover_full_day():
+def test_empty_day_slots_cover_window():
     from backend.services.booking import build_day_slots
 
-    day_start = datetime(2026, 8, 20, tzinfo=UTC)
-    day_end = day_start + timedelta(days=1)
+    day_start = datetime(2026, 8, 20, 6, 0, tzinfo=UTC)
+    day_end = datetime(2026, 8, 20, 15, 0, tzinfo=UTC)
     slots = build_day_slots(day_start, day_end, [], now=day_start)
     assert len(slots) == 1
     assert slots[0].status.value == "free"
@@ -214,13 +229,29 @@ def test_empty_day_slots_cover_full_day():
     assert slots[0].end > slots[0].start
 
 
+def test_office_hours_free_interval_bounds():
+    """Empty day with default office hours 09:00–18:00 MSK → free [06:00, 15:00) UTC."""
+    from backend.schemas import SlotStatus
+    from backend.services.booking import build_day_slots, office_day_bounds
+
+    day = date(2026, 8, 20)
+    day_start, day_end = office_day_bounds(day)
+    assert day_start == datetime(2026, 8, 20, 6, 0, tzinfo=UTC)
+    assert day_end == datetime(2026, 8, 20, 15, 0, tzinfo=UTC)
+    slots = build_day_slots(day_start, day_end, [], now=day_start - timedelta(days=1))
+    free = [s for s in slots if s.status == SlotStatus.free]
+    assert len(free) == 1
+    assert free[0].start == day_start
+    assert free[0].end == day_end
+
+
 def test_day_with_one_booking_has_two_free_gaps():
     from backend.services.booking import build_day_slots
 
-    day_start = datetime(2026, 8, 20, tzinfo=UTC)
-    day_end = day_start + timedelta(days=1)
-    busy_start = day_start + timedelta(hours=10)
-    busy_end = day_start + timedelta(hours=11)
+    day_start = datetime(2026, 8, 20, 6, 0, tzinfo=UTC)
+    day_end = datetime(2026, 8, 20, 15, 0, tzinfo=UTC)
+    busy_start = day_start + timedelta(hours=4)
+    busy_end = day_start + timedelta(hours=5)
     slots = build_day_slots(
         day_start,
         day_end,
@@ -238,8 +269,8 @@ def test_today_free_slots_start_at_ceil_30_of_now():
     from backend.schemas import SlotStatus
     from backend.services.booking import build_day_slots
 
-    day_start = datetime(2026, 8, 6, tzinfo=UTC)
-    day_end = day_start + timedelta(days=1)
+    day_start = datetime(2026, 8, 6, 6, 0, tzinfo=UTC)
+    day_end = datetime(2026, 8, 6, 15, 0, tzinfo=UTC)
     now = datetime(2026, 8, 6, 9, 28, tzinfo=UTC)
     slots = build_day_slots(day_start, day_end, [], now=now)
     free = [s for s in slots if s.status == SlotStatus.free]
@@ -253,12 +284,25 @@ def test_today_past_end_of_day_has_no_free_slots():
     from backend.schemas import SlotStatus
     from backend.services.booking import build_day_slots
 
-    day_start = datetime(2026, 8, 6, tzinfo=UTC)
-    day_end = day_start + timedelta(days=1)
+    day_start = datetime(2026, 8, 6, 6, 0, tzinfo=UTC)
+    day_end = datetime(2026, 8, 6, 15, 0, tzinfo=UTC)
     now = day_end
     slots = build_day_slots(day_start, day_end, [], now=now)
     assert slots == []
     assert all(s.status != SlotStatus.free for s in slots)
+
+
+def test_today_after_office_hours_no_free_slots():
+    """Today at 19:30 MSK → office window already closed → no free intervals."""
+    from backend.schemas import SlotStatus
+    from backend.services.booking import build_day_slots, office_day_bounds
+
+    day = date(2026, 8, 6)
+    day_start, day_end = office_day_bounds(day)
+    now = office_instant(day, 19, 30)
+    slots = build_day_slots(day_start, day_end, [], now=now)
+    assert all(s.status != SlotStatus.free for s in slots)
+    assert slots == []
 
 
 def test_ceil_to_minutes_aligned_unchanged():
@@ -272,7 +316,7 @@ def test_ceil_to_minutes_aligned_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_slots_api_empty_day_full_range(client, room_id):
+async def test_slots_api_empty_day_office_hours(client, room_id):
     day = "2030-01-15"
     res = await client.get(f"/api/rooms/{room_id}/slots", params={"date": day})
     assert res.status_code == 200
@@ -280,6 +324,21 @@ async def test_slots_api_empty_day_full_range(client, room_id):
     assert len(body["slots"]) == 1
     slot = body["slots"][0]
     assert slot["status"] == "free"
-    assert slot["start"].startswith("2030-01-15T00:00:00")
-    assert slot["end"].startswith("2030-01-16T00:00:00")
+    # 09:00–18:00 MSK = 06:00–15:00 UTC
+    assert slot["start"].startswith("2030-01-15T06:00:00")
+    assert slot["end"].startswith("2030-01-15T15:00:00")
     assert slot["start"] != slot["end"]
+
+
+@pytest.mark.asyncio
+async def test_booking_rejects_outside_office_hours(client, room_id):
+    day = future_office_day(1)
+    start = office_instant(day, 20)
+    end = office_instant(day, 21)
+    res = await client.post(
+        "/api/bookings",
+        headers={"X-Debug-Telegram-Id": "42"},
+        json={"room_id": room_id, "start": start.isoformat(), "end": end.isoformat()},
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == "Бронирование доступно с 09:00 до 18:00"

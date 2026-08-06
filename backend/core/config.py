@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     min_duration_minutes: int = 15
     max_duration_minutes: int = 240
 
+    # Office hours (Tier 2) — wall-clock in OFFICE_TIMEZONE
+    office_timezone: str = "Europe/Moscow"
+    office_hours_start: int = 9
+    office_hours_end: int = 18
+
 
 @lru_cache
 def get_settings() -> Settings:

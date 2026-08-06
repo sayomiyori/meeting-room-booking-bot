@@ -1,10 +1,17 @@
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import Settings, get_settings
-from backend.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationAppError
+from backend.core.exceptions import (
+    AppError,
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    ValidationAppError,
+)
 from backend.core.security import TelegramUser
 from backend.models import Booking
 from backend.repositories import BookingRepository, RoomRepository
@@ -15,6 +22,34 @@ def _ensure_aware(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
+
+
+def office_day_bounds(
+    day: date,
+    settings: Settings | None = None,
+) -> tuple[datetime, datetime]:
+    """UTC instants for [office_start, office_end) on *day* in OFFICE_TIMEZONE."""
+    settings = settings or get_settings()
+    tz = ZoneInfo(settings.office_timezone)
+    start_local = datetime(
+        day.year,
+        day.month,
+        day.day,
+        settings.office_hours_start,
+        0,
+        0,
+        tzinfo=tz,
+    )
+    end_local = datetime(
+        day.year,
+        day.month,
+        day.day,
+        settings.office_hours_end,
+        0,
+        0,
+        tzinfo=tz,
+    )
+    return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
 
 def booking_to_out(booking: Booking) -> BookingOut:
@@ -59,7 +94,7 @@ def bookable_from(
     if now.date() < day_start.date():
         return day_start
 
-    # Today (UTC)
+    # Today: combine with office window (day_end may be office close, not midnight)
     if now >= day_end:
         return None
     start = max(day_start, ceil_to_minutes(now, step_minutes))
@@ -77,9 +112,9 @@ def build_day_slots(
 ) -> list[SlotPublic]:
     """Merge busy bookings with free gaps for [day_start, day_end).
 
-    For *today*, free gaps start at ceil_30(now), not midnight — so the UI
-    never offers past times. If the whole day has passed, free gaps are omitted.
-    Never emits zero-length intervals.
+    For *today*, free gaps start at max(day_start, ceil_30(now)) — so the UI
+    never offers past times. If the whole day (or office window) has passed,
+    free gaps are omitted. Never emits zero-length intervals.
     """
     if day_end <= day_start:
         return []
@@ -119,9 +154,10 @@ def build_day_slots(
 
 
 class RoomService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, settings: Settings | None = None) -> None:
         self.rooms = RoomRepository(session)
         self.bookings = BookingRepository(session)
+        self.settings = settings or get_settings()
 
     async def list_rooms(self):
         return await self.rooms.list_all()
@@ -131,8 +167,7 @@ class RoomService:
         if room is None:
             raise NotFoundError("Комната не найдена")
 
-        day_start = datetime(day.year, day.month, day.day, tzinfo=UTC)
-        day_end = day_start + timedelta(days=1)
+        day_start, day_end = office_day_bounds(day, self.settings)
         bookings = await self.bookings.list_for_room_on_day(room_id, day_start, day_end)
         now = datetime.now(UTC)
 
@@ -149,6 +184,11 @@ class BookingService:
         self.settings = settings or get_settings()
         self.rooms = RoomRepository(session)
         self.bookings = BookingRepository(session)
+
+    def _office_hours_message(self) -> str:
+        start = self.settings.office_hours_start
+        end = self.settings.office_hours_end
+        return f"Бронирование доступно с {start:02d}:00 до {end:02d}:00"
 
     def validate_window(self, start: datetime, end: datetime) -> tuple[datetime, datetime]:
         start = _ensure_aware(start)
@@ -171,6 +211,13 @@ class BookingService:
             raise ValidationAppError(
                 f"Максимальная длительность — {self.settings.max_duration_minutes // 60} часа"
             )
+
+        tz = ZoneInfo(self.settings.office_timezone)
+        office_day = start.astimezone(tz).date()
+        office_start, office_end = office_day_bounds(office_day, self.settings)
+        if start < office_start or end > office_end:
+            raise AppError(self._office_hours_message(), status_code=400)
+
         return start, end
 
     async def create(self, payload_room_id: int, start: datetime, end: datetime, user: TelegramUser) -> BookingOut:
