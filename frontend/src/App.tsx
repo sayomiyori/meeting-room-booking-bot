@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -13,7 +13,17 @@ import {
 import { OccupancyIndicator } from "@/components/OccupancyIndicator";
 import { cn } from "@/lib/utils";
 
-type Step = "rooms" | "date" | "slots" | "confirm" | "mine";
+type Step = "rooms" | "date" | "slots" | "pick" | "confirm" | "mine";
+
+/** Matches backend Settings.max_duration_minutes */
+const MAX_DURATION_MINUTES = 240;
+const START_STEP_MINUTES = 30;
+const DURATION_OPTIONS = [
+  { minutes: 30, label: "30м" },
+  { minutes: 60, label: "1ч" },
+  { minutes: 90, label: "1.5ч" },
+  { minutes: 120, label: "2ч" },
+] as const;
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -48,6 +58,54 @@ function formatTime(iso: string, role: "start" | "end" = "start") {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
+function buildStartOptions(intervalStartIso: string, intervalEndIso: string): string[] {
+  const startMs = new Date(intervalStartIso).getTime();
+  const endMs = new Date(intervalEndIso).getTime();
+  const step = START_STEP_MINUTES * 60 * 1000;
+  const minBlock = START_STEP_MINUTES * 60 * 1000;
+  const options: string[] = [];
+  for (let t = startMs; t + minBlock <= endMs; t += step) {
+    options.push(new Date(t).toISOString());
+  }
+  return options;
+}
+
+function durationFits(startIso: string, minutes: number, intervalEndIso: string): boolean {
+  if (minutes > MAX_DURATION_MINUTES) return false;
+  const endMs = new Date(startIso).getTime() + minutes * 60 * 1000;
+  return endMs <= new Date(intervalEndIso).getTime();
+}
+
+function ChoiceChip({
+  children,
+  active,
+  disabled,
+  onClick,
+}: {
+  children: ReactNode;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "rounded-[10px] px-3 py-2 text-sm font-medium",
+        "disabled:cursor-not-allowed disabled:opacity-40",
+        "active:scale-[0.98]",
+        active
+          ? "border border-accent bg-accent text-white"
+          : "border border-border bg-transparent text-foreground",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 function GhostButton({
   children,
   className,
@@ -78,6 +136,9 @@ export default function App() {
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [selectedDate, setSelectedDate] = useState(todayISO());
   const [slots, setSlots] = useState<SlotPublic[]>([]);
+  const [freeInterval, setFreeInterval] = useState<SlotPublic | null>(null);
+  const [pickStartOption, setPickStartOption] = useState<string | null>(null);
+  const [pickDuration, setPickDuration] = useState<number | null>(null);
   const [pickStart, setPickStart] = useState<string | null>(null);
   const [pickEnd, setPickEnd] = useState<string | null>(null);
   const [mine, setMine] = useState<Booking[]>([]);
@@ -125,7 +186,10 @@ export default function App() {
       const current = stepRef.current;
       if (current === "rooms" || current === "date") {
         await loadRooms();
-      } else if ((current === "slots" || current === "confirm") && roomRef.current) {
+      } else if (
+        (current === "slots" || current === "pick" || current === "confirm") &&
+        roomRef.current
+      ) {
         await loadSlotsFor(roomRef.current, dateRef.current);
         await loadRooms();
       } else if (current === "mine") {
@@ -190,6 +254,9 @@ export default function App() {
       await loadSlotsFor(selectedRoom, date);
       setPickStart(null);
       setPickEnd(null);
+      setFreeInterval(null);
+      setPickStartOption(null);
+      setPickDuration(null);
       setStep("slots");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка слотов");
@@ -200,11 +267,28 @@ export default function App() {
 
   function selectSlot(slot: SlotPublic) {
     if (slot.status !== "free") return;
-    setPickStart(slot.start);
-    const start = new Date(slot.start).getTime();
-    const endCap = new Date(slot.end).getTime();
-    const oneHour = start + 60 * 60 * 1000;
-    setPickEnd(new Date(Math.min(oneHour, endCap)).toISOString());
+    const starts = buildStartOptions(slot.start, slot.end);
+    if (starts.length === 0) {
+      setError("В этом интервале нет доступного времени для бронирования");
+      return;
+    }
+    setFreeInterval(slot);
+    setPickStartOption(starts[0]);
+    setPickDuration(null);
+    setPickStart(null);
+    setPickEnd(null);
+    setError(null);
+    setStep("pick");
+  }
+
+  function goToConfirm() {
+    if (!freeInterval || !pickStartOption || pickDuration == null) return;
+    if (!durationFits(pickStartOption, pickDuration, freeInterval.end)) return;
+    const end = new Date(
+      new Date(pickStartOption).getTime() + pickDuration * 60 * 1000,
+    ).toISOString();
+    setPickStart(pickStartOption);
+    setPickEnd(end);
     setStep("confirm");
   }
 
@@ -385,9 +469,81 @@ export default function App() {
             </div>
           )}
 
+          {step === "pick" && selectedRoom && freeInterval && (
+            <div className="space-y-3">
+              <GhostButton onClick={() => setStep("slots")}>Назад</GhostButton>
+              <div className="rounded-[12px] bg-panel p-4">
+                <h2 className="text-base font-semibold">
+                  {selectedRoom.name} · {selectedDate}
+                </h2>
+                <p className="mt-1 text-sm text-muted">
+                  Интервал{" "}
+                  {formatTime(freeInterval.start, "start")} —{" "}
+                  {formatTime(freeInterval.end, "end")} UTC
+                </p>
+              </div>
+
+              <div className="rounded-[12px] bg-panel p-4">
+                <p className="mb-3 text-sm font-medium">Начало</p>
+                <div className="flex flex-wrap gap-2">
+                  {buildStartOptions(freeInterval.start, freeInterval.end).map((iso) => (
+                    <ChoiceChip
+                      key={iso}
+                      active={pickStartOption === iso}
+                      onClick={() => {
+                        setPickStartOption(iso);
+                        if (
+                          pickDuration != null &&
+                          !durationFits(iso, pickDuration, freeInterval.end)
+                        ) {
+                          setPickDuration(null);
+                        }
+                      }}
+                    >
+                      {formatTime(iso, "start")}
+                    </ChoiceChip>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-[12px] bg-panel p-4">
+                <p className="mb-3 text-sm font-medium">Длительность</p>
+                <div className="flex flex-wrap gap-2">
+                  {DURATION_OPTIONS.map((opt) => {
+                    const ok =
+                      pickStartOption != null &&
+                      durationFits(pickStartOption, opt.minutes, freeInterval.end);
+                    return (
+                      <ChoiceChip
+                        key={opt.minutes}
+                        active={pickDuration === opt.minutes}
+                        disabled={!ok}
+                        onClick={() => setPickDuration(opt.minutes)}
+                      >
+                        {opt.label}
+                      </ChoiceChip>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <GhostButton
+                className="w-full"
+                disabled={
+                  !pickStartOption ||
+                  pickDuration == null ||
+                  !durationFits(pickStartOption, pickDuration, freeInterval.end)
+                }
+                onClick={goToConfirm}
+              >
+                Далее
+              </GhostButton>
+            </div>
+          )}
+
           {step === "confirm" && selectedRoom && pickStart && pickEnd && (
             <div className="rounded-[12px] bg-panel p-4">
-              <GhostButton className="mb-4" onClick={() => setStep("slots")}>
+              <GhostButton className="mb-4" onClick={() => setStep("pick")}>
                 Назад
               </GhostButton>
               <h2 className="text-base font-semibold">Подтверждение</h2>
