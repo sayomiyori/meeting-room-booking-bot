@@ -25,6 +25,16 @@ export type Booking = {
   created_at: string;
 };
 
+export type BookingConfig = {
+  office_timezone: string;
+  office_hours_start: number;
+  office_hours_end: number;
+  min_duration_minutes: number;
+  max_duration_minutes: number;
+  slot_step_minutes: number;
+  soon_free_minutes: number;
+};
+
 type TelegramWebApp = {
   initData: string;
   ready: () => void;
@@ -43,6 +53,10 @@ declare global {
 }
 
 const DEBUG_TG_ID = import.meta.env.VITE_DEBUG_TELEGRAM_ID as string | undefined;
+
+/** Session-scoped cache for GET /api/config. */
+let cachedConfig: BookingConfig | null = null;
+let configPromise: Promise<BookingConfig> | null = null;
 
 export function getInitData(): string {
   return window.Telegram?.WebApp?.initData ?? "";
@@ -87,7 +101,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function fetchConfig(): Promise<BookingConfig> {
+  if (cachedConfig) return cachedConfig;
+  if (!configPromise) {
+    configPromise = request<BookingConfig>("/api/config").then((cfg) => {
+      cachedConfig = cfg;
+      return cfg;
+    });
+  }
+  return configPromise;
+}
+
 export const api = {
+  config: fetchConfig,
   rooms: () => request<Room[]>("/api/rooms"),
   slots: (roomId: number, date: string) =>
     request<{ room_id: number; date: string; slots: SlotPublic[] }>(

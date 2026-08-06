@@ -1,27 +1,67 @@
-/** Office wall-clock timezone. Moscow has no DST (fixed UTC+3). */
-export const OFFICE_TIMEZONE = "Europe/Moscow";
+/** Office wall-clock timezone — set from GET /api/config (backend Settings). */
+let officeTimezone = "Europe/Moscow";
 
-const timeFmt = new Intl.DateTimeFormat("en-GB", {
-  timeZone: OFFICE_TIMEZONE,
+let timeFmt = new Intl.DateTimeFormat("en-GB", {
+  timeZone: officeTimezone,
   hour: "2-digit",
   minute: "2-digit",
   hour12: false,
 });
 
-const dateFmt = new Intl.DateTimeFormat("en-CA", {
-  timeZone: OFFICE_TIMEZONE,
+let dateFmt = new Intl.DateTimeFormat("en-CA", {
+  timeZone: officeTimezone,
   year: "numeric",
   month: "2-digit",
   day: "2-digit",
 });
 
-const partsFmt = new Intl.DateTimeFormat("en-GB", {
-  timeZone: OFFICE_TIMEZONE,
+let partsFmt = new Intl.DateTimeFormat("en-GB", {
+  timeZone: officeTimezone,
   hour: "2-digit",
   minute: "2-digit",
   hour12: false,
   hourCycle: "h23",
 });
+
+function rebuildFormatters(tz: string) {
+  timeFmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  dateFmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  partsFmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    hourCycle: "h23",
+  });
+}
+
+/** Apply timezone from backend config (session-scoped). */
+export function setOfficeTimezone(tz: string) {
+  if (!tz || tz === officeTimezone) return;
+  officeTimezone = tz;
+  rebuildFormatters(tz);
+}
+
+export function getOfficeTimezone(): string {
+  return officeTimezone;
+}
+
+/** Short label for UI (МСК for Europe/Moscow, else IANA id). */
+export function officeZoneLabel(tz?: string): string {
+  const zone = tz || officeTimezone;
+  if (zone === "Europe/Moscow") return "МСК";
+  return zone;
+}
 
 function officeHourMinute(isoOrDate: string | Date): { hour: number; minute: number } {
   const d = typeof isoOrDate === "string" ? new Date(isoOrDate) : isoOrDate;
@@ -65,7 +105,7 @@ export function formatOfficeTime(iso: string, role: "start" | "end" = "start"): 
 /** Long datetime for booking lists (office zone). */
 export function formatOfficeDateTime(iso: string): string {
   return new Intl.DateTimeFormat("ru-RU", {
-    timeZone: OFFICE_TIMEZONE,
+    timeZone: officeTimezone,
     day: "2-digit",
     month: "2-digit",
     year: "numeric",

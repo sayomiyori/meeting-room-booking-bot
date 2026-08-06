@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     # Booking business rules (Tier 1 fixed)
     min_duration_minutes: int = 15
     max_duration_minutes: int = 240
+    slot_step_minutes: int = 30
+    soon_free_minutes: int = 30
 
     # Office hours (Tier 2) — wall-clock in OFFICE_TIMEZONE
     office_timezone: str = "Europe/Moscow"

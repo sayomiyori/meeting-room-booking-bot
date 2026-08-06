@@ -55,3 +55,15 @@ class BookingOut(BaseModel):
 
 class MessageOut(BaseModel):
     detail: str
+
+
+class BookingConfigOut(BaseModel):
+    """Public booking rules — safe to expose without auth."""
+
+    office_timezone: str
+    office_hours_start: int
+    office_hours_end: int
+    min_duration_minutes: int
+    max_duration_minutes: int
+    slot_step_minutes: int
+    soon_free_minutes: int

@@ -11,6 +11,7 @@ from backend.core.config import get_settings
 from backend.core.database import async_session_factory
 from backend.core.security import TelegramUser
 from backend.services.booking import BookingService
+from backend.services.notifications import format_office_clock, office_zone_label
 
 router = Router(name="commands")
 
@@ -69,9 +70,12 @@ async def cmd_mybookings(message: Message) -> None:
 
     for booking in bookings:
         room = booking.room_name or f"#{booking.room_id}"
+        start = format_office_clock(booking.start, with_date=True)
+        end = format_office_clock(booking.end, with_date=False)
+        zone = office_zone_label()
         text = (
             f"<b>{room}</b>\n"
-            f"{booking.start.strftime('%d.%m.%Y %H:%M')} — {booking.end.strftime('%H:%M')} UTC\n"
+            f"{start} — {end} {zone}\n"
             f"ID: {booking.id}"
         )
         kb = InlineKeyboardMarkup(

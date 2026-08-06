@@ -110,17 +110,26 @@ def build_day_slots(
     busy_intervals: list[tuple[datetime, datetime]],
     *,
     now: datetime,
+    step_minutes: int | None = None,
+    soon_free_minutes: int | None = None,
 ) -> list[SlotPublic]:
     """Merge busy bookings with free gaps for [day_start, day_end).
 
-    For *today*, free gaps start at max(day_start, ceil_30(now)) — so the UI
+    For *today*, free gaps start at max(day_start, ceil_step(now)) — so the UI
     never offers past times. If the whole day (or office window) has passed,
     free gaps are omitted. Never emits zero-length intervals.
     """
+    settings = get_settings()
+    if step_minutes is None:
+        step_minutes = settings.slot_step_minutes
+    if soon_free_minutes is None:
+        soon_free_minutes = settings.soon_free_minutes
+
     if day_end <= day_start:
         return []
 
     busy_slots: list[SlotPublic] = []
+    soon_free_seconds = soon_free_minutes * 60
     for start, end in sorted(busy_intervals, key=lambda pair: pair[0]):
         clipped_start = max(start, day_start)
         clipped_end = min(end, day_end)
@@ -128,11 +137,11 @@ def build_day_slots(
             continue
         remaining = (end - now).total_seconds()
         status = SlotStatus.busy
-        if remaining > 0 and remaining <= 30 * 60:
+        if remaining > 0 and remaining <= soon_free_seconds:
             status = SlotStatus.soon_free
         busy_slots.append(SlotPublic(start=clipped_start, end=clipped_end, status=status))
 
-    available = bookable_from(day_start, day_end, now)
+    available = bookable_from(day_start, day_end, now, step_minutes=step_minutes)
     if available is None:
         return [s for s in busy_slots if s.end > s.start]
 
@@ -175,7 +184,14 @@ class RoomService:
         busy_intervals = [
             (booking.during.lower, booking.during.upper) for booking in bookings
         ]
-        slots = build_day_slots(day_start, day_end, busy_intervals, now=now)
+        slots = build_day_slots(
+            day_start,
+            day_end,
+            busy_intervals,
+            now=now,
+            step_minutes=self.settings.slot_step_minutes,
+            soon_free_minutes=self.settings.soon_free_minutes,
+        )
         return SlotsResponse(room_id=room_id, date=day.isoformat(), slots=slots)
 
 

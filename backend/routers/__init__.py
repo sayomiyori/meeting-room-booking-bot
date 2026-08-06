@@ -1,3 +1,3 @@
-from backend.routers import bookings, health, rooms
+from backend.routers import bookings, config, health, rooms
 
-__all__ = ["bookings", "health", "rooms"]
+__all__ = ["bookings", "config", "health", "rooms"]

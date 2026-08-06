@@ -6,6 +6,7 @@ import {
   hasTelegramContext,
   initTelegramChrome,
   type Booking,
+  type BookingConfig,
   type Room,
   type SlotPublic,
   type SlotStatus,
@@ -17,19 +18,11 @@ import {
   formatOfficeDateTime,
   formatOfficeTime,
   officeTodayISO,
+  officeZoneLabel,
+  setOfficeTimezone,
 } from "@/lib/timezone";
 
 type Step = "rooms" | "date" | "slots" | "pick" | "confirm" | "mine";
-
-/** Matches backend Settings.max_duration_minutes */
-const MAX_DURATION_MINUTES = 240;
-const START_STEP_MINUTES = 30;
-const DURATION_OPTIONS = [
-  { minutes: 30, label: "30м" },
-  { minutes: 60, label: "1ч" },
-  { minutes: 90, label: "1.5ч" },
-  { minutes: 120, label: "2ч" },
-] as const;
 
 function todayISO() {
   return officeTodayISO();
@@ -37,6 +30,20 @@ function todayISO() {
 
 function addDaysISO(base: string, days: number) {
   return addOfficeDaysISO(base, days);
+}
+
+function durationLabel(minutes: number): string {
+  if (minutes < 60) return `${minutes}м`;
+  const hours = minutes / 60;
+  return Number.isInteger(hours) ? `${hours}ч` : `${hours}ч`;
+}
+
+function buildDurationOptions(stepMinutes: number, maxMinutes: number) {
+  const options: { minutes: number; label: string }[] = [];
+  for (let m = stepMinutes; m <= maxMinutes; m += stepMinutes) {
+    options.push({ minutes: m, label: durationLabel(m) });
+  }
+  return options;
 }
 
 function roomStatusFromSlots(slots: SlotPublic[]): SlotStatus {
@@ -52,24 +59,31 @@ function roomStatusFromSlots(slots: SlotPublic[]): SlotStatus {
 }
 
 /**
- * Start options every 30 minutes in [intervalStart, intervalEnd).
- * Stored as UTC ISO for API; UI labels use formatOfficeTime (МСК).
- * Europe/Moscow is fixed UTC+3, so the 30-minute grid matches wall-clock MSK.
+ * Start options every slot_step_minutes in [intervalStart, intervalEnd).
+ * Stored as UTC ISO for API; UI labels use formatOfficeTime (office TZ).
  */
-function buildStartOptions(intervalStartIso: string, intervalEndIso: string): string[] {
+function buildStartOptions(
+  intervalStartIso: string,
+  intervalEndIso: string,
+  stepMinutes: number,
+): string[] {
   const startMs = new Date(intervalStartIso).getTime();
   const endMs = new Date(intervalEndIso).getTime();
-  const step = START_STEP_MINUTES * 60 * 1000;
-  const minBlock = START_STEP_MINUTES * 60 * 1000;
+  const step = stepMinutes * 60 * 1000;
   const options: string[] = [];
-  for (let t = startMs; t + minBlock <= endMs; t += step) {
+  for (let t = startMs; t + step <= endMs; t += step) {
     options.push(new Date(t).toISOString());
   }
   return options;
 }
 
-function durationFits(startIso: string, minutes: number, intervalEndIso: string): boolean {
-  if (minutes > MAX_DURATION_MINUTES) return false;
+function durationFits(
+  startIso: string,
+  minutes: number,
+  intervalEndIso: string,
+  maxDurationMinutes: number,
+): boolean {
+  if (minutes > maxDurationMinutes) return false;
   const endMs = new Date(startIso).getTime() + minutes * 60 * 1000;
   return endMs <= new Date(intervalEndIso).getTime();
 }
@@ -128,6 +142,7 @@ function GhostButton({
 export default function App() {
   const [ready, setReady] = useState(false);
   const [allowed, setAllowed] = useState(false);
+  const [config, setConfig] = useState<BookingConfig | null>(null);
   const [step, setStep] = useState<Step>("rooms");
   const [rooms, setRooms] = useState<Room[]>([]);
   const [statuses, setStatuses] = useState<Record<number, SlotStatus>>({});
@@ -142,6 +157,12 @@ export default function App() {
   const [mine, setMine] = useState<Booking[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const zoneLabel = officeZoneLabel(config?.office_timezone);
+  const durationOptions = useMemo(() => {
+    if (!config) return [];
+    return buildDurationOptions(config.slot_step_minutes, config.max_duration_minutes);
+  }, [config]);
 
   const stepRef = useRef(step);
   const roomRef = useRef(selectedRoom);
@@ -203,14 +224,22 @@ export default function App() {
     initTelegramChrome();
     const ok = hasTelegramContext();
     setAllowed(ok);
-    setReady(true);
-    if (!ok) return;
+    if (!ok) {
+      setReady(true);
+      return;
+    }
 
     void (async () => {
       try {
+        const cfg = await api.config();
+        setOfficeTimezone(cfg.office_timezone);
+        setConfig(cfg);
+        setSelectedDate(officeTodayISO());
         await loadRooms();
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Не удалось загрузить комнаты");
+        setError(e instanceof Error ? e.message : "Не удалось загрузить данные");
+      } finally {
+        setReady(true);
       }
     })();
   }, [loadRooms]);
@@ -264,8 +293,8 @@ export default function App() {
   }
 
   function selectSlot(slot: SlotPublic) {
-    if (slot.status !== "free") return;
-    const starts = buildStartOptions(slot.start, slot.end);
+    if (slot.status !== "free" || !config) return;
+    const starts = buildStartOptions(slot.start, slot.end, config.slot_step_minutes);
     if (starts.length === 0) {
       setError("В этом интервале нет доступного времени для бронирования");
       return;
@@ -280,8 +309,17 @@ export default function App() {
   }
 
   function goToConfirm() {
-    if (!freeInterval || !pickStartOption || pickDuration == null) return;
-    if (!durationFits(pickStartOption, pickDuration, freeInterval.end)) return;
+    if (!config || !freeInterval || !pickStartOption || pickDuration == null) return;
+    if (
+      !durationFits(
+        pickStartOption,
+        pickDuration,
+        freeInterval.end,
+        config.max_duration_minutes,
+      )
+    ) {
+      return;
+    }
     const end = new Date(
       new Date(pickStartOption).getTime() + pickDuration * 60 * 1000,
     ).toISOString();
@@ -446,7 +484,7 @@ export default function App() {
                 <h2 className="font-semibold">
                   {selectedRoom.name} · {selectedDate}
                 </h2>
-                <p className="mt-1 text-sm text-muted">Свободные интервалы (МСК)</p>
+                <p className="mt-1 text-sm text-muted">Свободные интервалы ({zoneLabel})</p>
               </div>
               <div className="flex flex-col gap-2">
                 {slots.map((slot) => (
@@ -467,7 +505,7 @@ export default function App() {
             </div>
           )}
 
-          {step === "pick" && selectedRoom && freeInterval && (
+          {step === "pick" && selectedRoom && freeInterval && config && (
             <div className="space-y-3">
               <GhostButton onClick={() => setStep("slots")}>Назад</GhostButton>
               <div className="rounded-[12px] bg-panel p-4">
@@ -477,14 +515,18 @@ export default function App() {
                 <p className="mt-1 text-sm text-muted">
                   Интервал{" "}
                   {formatOfficeTime(freeInterval.start, "start")} —{" "}
-                  {formatOfficeTime(freeInterval.end, "end")} МСК
+                  {formatOfficeTime(freeInterval.end, "end")} {zoneLabel}
                 </p>
               </div>
 
               <div className="rounded-[12px] bg-panel p-4">
                 <p className="mb-3 text-sm font-medium">Начало</p>
                 <div className="flex flex-wrap gap-2">
-                  {buildStartOptions(freeInterval.start, freeInterval.end).map((iso) => (
+                  {buildStartOptions(
+                    freeInterval.start,
+                    freeInterval.end,
+                    config.slot_step_minutes,
+                  ).map((iso) => (
                     <ChoiceChip
                       key={iso}
                       active={pickStartOption === iso}
@@ -492,7 +534,12 @@ export default function App() {
                         setPickStartOption(iso);
                         if (
                           pickDuration != null &&
-                          !durationFits(iso, pickDuration, freeInterval.end)
+                          !durationFits(
+                            iso,
+                            pickDuration,
+                            freeInterval.end,
+                            config.max_duration_minutes,
+                          )
                         ) {
                           setPickDuration(null);
                         }
@@ -507,10 +554,15 @@ export default function App() {
               <div className="rounded-[12px] bg-panel p-4">
                 <p className="mb-3 text-sm font-medium">Длительность</p>
                 <div className="flex flex-wrap gap-2">
-                  {DURATION_OPTIONS.map((opt) => {
+                  {durationOptions.map((opt) => {
                     const ok =
                       pickStartOption != null &&
-                      durationFits(pickStartOption, opt.minutes, freeInterval.end);
+                      durationFits(
+                        pickStartOption,
+                        opt.minutes,
+                        freeInterval.end,
+                        config.max_duration_minutes,
+                      );
                     return (
                       <ChoiceChip
                         key={opt.minutes}
@@ -530,7 +582,12 @@ export default function App() {
                 disabled={
                   !pickStartOption ||
                   pickDuration == null ||
-                  !durationFits(pickStartOption, pickDuration, freeInterval.end)
+                  !durationFits(
+                    pickStartOption,
+                    pickDuration,
+                    freeInterval.end,
+                    config.max_duration_minutes,
+                  )
                 }
                 onClick={goToConfirm}
               >
@@ -548,8 +605,8 @@ export default function App() {
               <p className="mt-2 text-sm text-muted">
                 {selectedRoom.name}
                 <br />
-                {formatOfficeTime(pickStart, "start")} — {formatOfficeTime(pickEnd, "end")} МСК ·{" "}
-                {selectedDate}
+                {formatOfficeTime(pickStart, "start")} — {formatOfficeTime(pickEnd, "end")}{" "}
+                {zoneLabel} · {selectedDate}
               </p>
               <div className="mt-5 flex gap-2">
                 <GhostButton className="flex-1" disabled={busy} onClick={confirmBooking}>
@@ -570,7 +627,8 @@ export default function App() {
                 <div key={b.id} className="rounded-[12px] bg-panel p-4">
                   <h3 className="font-semibold">{b.room_name ?? `Комната #${b.room_id}`}</h3>
                   <p className="mt-1 text-sm text-muted">
-                    {formatOfficeDateTime(b.start)} — {formatOfficeTime(b.end, "end")} МСК
+                    {formatOfficeDateTime(b.start)} — {formatOfficeTime(b.end, "end")}{" "}
+                    {zoneLabel}
                   </p>
                   <GhostButton className="mt-3" disabled={busy} onClick={() => cancel(b.id)}>
                     Отменить

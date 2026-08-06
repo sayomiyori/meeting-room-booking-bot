@@ -17,16 +17,21 @@ from backend.main import create_app
 
 
 BOT_TOKEN = "123456:TEST_TOKEN_FOR_UNIT_TESTS"
-OFFICE_TZ = ZoneInfo("Europe/Moscow")
+
+
+def office_tz() -> ZoneInfo:
+    return ZoneInfo(get_settings().office_timezone)
 
 
 def office_instant(day: date, hour: int, minute: int = 0) -> datetime:
-    """Wall-clock time in Europe/Moscow → UTC instant."""
-    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=OFFICE_TZ).astimezone(UTC)
+    """Wall-clock time in OFFICE_TIMEZONE → UTC instant."""
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=office_tz()).astimezone(
+        UTC
+    )
 
 
 def future_office_day(days: int = 1) -> date:
-    return (datetime.now(OFFICE_TZ) + timedelta(days=days)).date()
+    return (datetime.now(office_tz()) + timedelta(days=days)).date()
 
 
 def make_init_data(user_id: int = 42, *, auth_age_seconds: int = 10) -> str:
@@ -345,14 +350,27 @@ def test_today_after_office_hours_no_free_slots():
     assert slots == []
 
 
-def test_ceil_to_minutes_aligned_unchanged():
+def test_ceil_to_minutes_aligned_unchanged(settings):
     from backend.services.booking import ceil_to_minutes
 
+    step = settings.slot_step_minutes
     aligned = datetime(2026, 8, 6, 9, 0, tzinfo=UTC)
-    assert ceil_to_minutes(aligned, 30) == aligned
-    assert ceil_to_minutes(datetime(2026, 8, 6, 9, 28, tzinfo=UTC), 30) == datetime(
+    assert ceil_to_minutes(aligned, step) == aligned
+    assert ceil_to_minutes(datetime(2026, 8, 6, 9, 28, tzinfo=UTC), step) == datetime(
         2026, 8, 6, 9, 30, tzinfo=UTC
     )
+
+
+@pytest.mark.asyncio
+async def test_public_booking_config(client, settings):
+    res = await client.get("/api/config")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["office_timezone"] == settings.office_timezone
+    assert body["max_duration_minutes"] == settings.max_duration_minutes
+    assert body["slot_step_minutes"] == settings.slot_step_minutes
+    assert body["office_hours_start"] == settings.office_hours_start
+    assert body["office_hours_end"] == settings.office_hours_end
 
 
 @pytest.mark.asyncio

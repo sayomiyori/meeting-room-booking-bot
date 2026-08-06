@@ -13,7 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.core.config import get_settings
 from backend.core.logging_safe import redact_secrets
-from backend.routers import bookings, health, rooms
+from backend.routers import bookings, config, health, rooms
 from backend.routers.bookings import limiter
 from backend.services.scheduler import start_scheduler, stop_scheduler
 from bot import webhook_router
@@ -109,6 +109,7 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=500, content={"detail": detail})
 
     app.include_router(health.router)
+    app.include_router(config.router)
     app.include_router(rooms.router)
     app.include_router(bookings.router)
     app.include_router(webhook_router)
