@@ -12,6 +12,12 @@ import {
 } from "@/lib/api";
 import { OccupancyIndicator } from "@/components/OccupancyIndicator";
 import { cn } from "@/lib/utils";
+import {
+  addOfficeDaysISO,
+  formatOfficeDateTime,
+  formatOfficeTime,
+  officeTodayISO,
+} from "@/lib/timezone";
 
 type Step = "rooms" | "date" | "slots" | "pick" | "confirm" | "mine";
 
@@ -26,13 +32,11 @@ const DURATION_OPTIONS = [
 ] as const;
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  return officeTodayISO();
 }
 
 function addDaysISO(base: string, days: number) {
-  const d = new Date(`${base}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
+  return addOfficeDaysISO(base, days);
 }
 
 function roomStatusFromSlots(slots: SlotPublic[]): SlotStatus {
@@ -47,17 +51,11 @@ function roomStatusFromSlots(slots: SlotPublic[]): SlotStatus {
   return busy.status;
 }
 
-/** Format UTC clock; exclusive end at midnight → 24:00 (not 00:00 of next day). */
-function formatTime(iso: string, role: "start" | "end" = "start") {
-  const d = new Date(iso);
-  const hours = d.getUTCHours();
-  const minutes = d.getUTCMinutes();
-  if (role === "end" && hours === 0 && minutes === 0) {
-    return "24:00";
-  }
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-}
-
+/**
+ * Start options every 30 minutes in [intervalStart, intervalEnd).
+ * Stored as UTC ISO for API; UI labels use formatOfficeTime (МСК).
+ * Europe/Moscow is fixed UTC+3, so the 30-minute grid matches wall-clock MSK.
+ */
 function buildStartOptions(intervalStartIso: string, intervalEndIso: string): string[] {
   const startMs = new Date(intervalStartIso).getTime();
   const endMs = new Date(intervalEndIso).getTime();
@@ -448,7 +446,7 @@ export default function App() {
                 <h2 className="font-semibold">
                   {selectedRoom.name} · {selectedDate}
                 </h2>
-                <p className="mt-1 text-sm text-muted">Свободные интервалы (UTC)</p>
+                <p className="mt-1 text-sm text-muted">Свободные интервалы (МСК)</p>
               </div>
               <div className="flex flex-col gap-2">
                 {slots.map((slot) => (
@@ -460,7 +458,7 @@ export default function App() {
                     className="flex items-center justify-between rounded-[12px] bg-panel px-3 py-3 text-left disabled:opacity-50"
                   >
                     <span className="text-sm font-medium">
-                      {formatTime(slot.start, "start")} — {formatTime(slot.end, "end")}
+                      {formatOfficeTime(slot.start, "start")} — {formatOfficeTime(slot.end, "end")}
                     </span>
                     <OccupancyIndicator status={slot.status} />
                   </button>
@@ -478,8 +476,8 @@ export default function App() {
                 </h2>
                 <p className="mt-1 text-sm text-muted">
                   Интервал{" "}
-                  {formatTime(freeInterval.start, "start")} —{" "}
-                  {formatTime(freeInterval.end, "end")} UTC
+                  {formatOfficeTime(freeInterval.start, "start")} —{" "}
+                  {formatOfficeTime(freeInterval.end, "end")} МСК
                 </p>
               </div>
 
@@ -500,7 +498,7 @@ export default function App() {
                         }
                       }}
                     >
-                      {formatTime(iso, "start")}
+                      {formatOfficeTime(iso, "start")}
                     </ChoiceChip>
                   ))}
                 </div>
@@ -550,7 +548,7 @@ export default function App() {
               <p className="mt-2 text-sm text-muted">
                 {selectedRoom.name}
                 <br />
-                {formatTime(pickStart, "start")} — {formatTime(pickEnd, "end")} UTC ·{" "}
+                {formatOfficeTime(pickStart, "start")} — {formatOfficeTime(pickEnd, "end")} МСК ·{" "}
                 {selectedDate}
               </p>
               <div className="mt-5 flex gap-2">
@@ -572,8 +570,7 @@ export default function App() {
                 <div key={b.id} className="rounded-[12px] bg-panel p-4">
                   <h3 className="font-semibold">{b.room_name ?? `Комната #${b.room_id}`}</h3>
                   <p className="mt-1 text-sm text-muted">
-                    {new Date(b.start).toLocaleString("ru-RU", { timeZone: "UTC" })} —{" "}
-                    {formatTime(b.end, "end")} UTC
+                    {formatOfficeDateTime(b.start)} — {formatOfficeTime(b.end, "end")} МСК
                   </p>
                   <GhostButton className="mt-3" disabled={busy} onClick={() => cancel(b.id)}>
                     Отменить
