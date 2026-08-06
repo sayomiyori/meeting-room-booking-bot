@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import Select, func, select, text, update
+from sqlalchemy import Select, func, not_, select, text, update
 from sqlalchemy.dialects.postgresql import Range
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -59,7 +59,7 @@ class BookingRepository:
             .options(selectinload(Booking.room))
             .where(
                 Booking.telegram_id == telegram_id,
-                Booking.canceled.is_(False),
+                not_(Booking.canceled),
                 text("upper(during) > :now").bindparams(now=now),
             )
             .order_by(text("lower(during)"))
@@ -78,7 +78,7 @@ class BookingRepository:
             select(Booking)
             .where(
                 Booking.room_id == room_id,
-                Booking.canceled.is_(False),
+                not_(Booking.canceled),
                 Booking.during.op("&&")(day_range),
             )
             .order_by(text("lower(during)"))
@@ -101,8 +101,8 @@ class BookingRepository:
             select(Booking)
             .options(selectinload(Booking.room))
             .where(
-                Booking.canceled.is_(False),
-                Booking.reminder_sent.is_(False),
+                not_(Booking.canceled),
+                not_(Booking.reminder_sent),
                 text("lower(during) >= :ws AND lower(during) <= :we").bindparams(
                     ws=window_start,
                     we=window_end,
@@ -127,7 +127,7 @@ class BookingRepository:
         rng = Range(start, end, bounds="[)")
         stmt = select(func.count()).select_from(Booking).where(
             Booking.room_id == room_id,
-            Booking.canceled.is_(False),
+            not_(Booking.canceled),
             Booking.during.op("&&")(rng),
         )
         result = await self.session.execute(stmt)
