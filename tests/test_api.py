@@ -55,9 +55,9 @@ async def db_engine(settings):
                 text(
                     """
                     INSERT INTO rooms (name, capacity, photo_url, description) VALUES
-                    ('Север', 6, '/media/rooms/north.jpg', 'Test seed north'),
-                    ('Юг', 10, '/media/rooms/south.jpg', 'Test seed south'),
-                    ('Восток', 4, '/media/rooms/east.jpg', 'Test seed east')
+                    ('Большая', 10, '/media/rooms/big.jpg', 'Test seed big'),
+                    ('Малая', 8, '/media/rooms/small.jpg', 'Test seed small'),
+                    ('Коворкинг', 4, '/media/rooms/coworking.jpg', 'Test seed coworking')
                     """
                 )
             )

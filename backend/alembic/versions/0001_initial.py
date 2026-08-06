@@ -71,22 +71,22 @@ def upgrade() -> None:
         """
         INSERT INTO rooms (name, capacity, photo_url, description) VALUES
         (
-          'Север',
-          6,
-          '/media/rooms/north.jpg',
-          'Компактная переговорная у окна, доски и HDMI.'
-        ),
-        (
-          'Юг',
+          'Большая',
           10,
-          '/media/rooms/south.jpg',
-          'Просторная комната для командных синкапов.'
+          '/media/rooms/big.jpg',
+          'Живой торец стола, вид на парковку'
         ),
         (
-          'Восток',
+          'Малая',
+          8,
+          '/media/rooms/small.jpg',
+          'Стекло, хром, для быстрых созвонов и встреч 1:1'
+        ),
+        (
+          'Коворкинг',
           4,
-          '/media/rooms/east.jpg',
-          'Тихая комната для 1:1 и собеседований.'
+          '/media/rooms/coworking.jpg',
+          'Лаунж-зона для неформальных встреч'
         )
         """
     )
