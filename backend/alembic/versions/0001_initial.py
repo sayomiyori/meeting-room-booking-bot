@@ -73,19 +73,19 @@ def upgrade() -> None:
         (
           'Север',
           6,
-          'https://images.unsplash.com/photo-1497366216548-37526070297c?w=800&q=80',
+          '/media/rooms/north.jpg',
           'Компактная переговорная у окна, доски и HDMI.'
         ),
         (
           'Юг',
           10,
-          'https://images.unsplash.com/photo-1497366811353-6870744d04b2?w=800&q=80',
+          '/media/rooms/south.jpg',
           'Просторная комната для командных синкапов.'
         ),
         (
           'Восток',
           4,
-          'https://images.unsplash.com/photo-1556761175-5973dc0f32e7?w=800&q=80',
+          '/media/rooms/east.jpg',
           'Тихая комната для 1:1 и собеседований.'
         )
         """

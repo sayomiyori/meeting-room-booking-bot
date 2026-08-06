@@ -48,15 +48,19 @@ async def db_engine(settings):
     engine = create_async_engine(settings.database_url, pool_pre_ping=True)
     async with engine.begin() as conn:
         await conn.execute(text("DELETE FROM bookings"))
-        await conn.execute(
-            text(
-                """
-                INSERT INTO rooms (name, capacity, photo_url, description)
-                SELECT 'Test Room', 4, 'https://example.com/r.jpg', 'Test'
-                WHERE NOT EXISTS (SELECT 1 FROM rooms WHERE name = 'Test Room')
-                """
+        # Ensure the three seeded rooms exist (no Test Room)
+        count = (await conn.execute(text("SELECT COUNT(*) FROM rooms"))).scalar_one()
+        if count == 0:
+            await conn.execute(
+                text(
+                    """
+                    INSERT INTO rooms (name, capacity, photo_url, description) VALUES
+                    ('Север', 6, '/media/rooms/north.jpg', 'Test seed north'),
+                    ('Юг', 10, '/media/rooms/south.jpg', 'Test seed south'),
+                    ('Восток', 4, '/media/rooms/east.jpg', 'Test seed east')
+                    """
+                )
             )
-        )
     yield engine
     async with engine.begin() as conn:
         await conn.execute(text("DELETE FROM bookings"))
@@ -87,8 +91,8 @@ async def client(db_engine, settings):
 @pytest.fixture
 async def room_id(client):
     rooms = (await client.get("/api/rooms")).json()
-    test = next((r for r in rooms if r["name"] == "Test Room"), rooms[0])
-    return test["id"]
+    assert rooms, "expected seeded rooms"
+    return rooms[0]["id"]
 
 
 @pytest.mark.asyncio

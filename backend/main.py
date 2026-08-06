@@ -20,6 +20,7 @@ from bot import webhook_router
 
 logger = structlog.get_logger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+MEDIA_DIR = Path(__file__).resolve().parent / "media"
 
 
 @asynccontextmanager
@@ -111,6 +112,10 @@ def create_app() -> FastAPI:
     app.include_router(rooms.router)
     app.include_router(bookings.router)
     app.include_router(webhook_router)
+
+    # Room photos — mount before SPA catch-all at /
+    if MEDIA_DIR.exists():
+        app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 
     if STATIC_DIR.exists():
         app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
