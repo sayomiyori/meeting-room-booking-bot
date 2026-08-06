@@ -304,11 +304,13 @@ export default function App() {
                   onClick={() => openDate(room)}
                   className="overflow-hidden rounded-[12px] bg-panel text-left"
                 >
-                  <img
-                    src={room.photo_url}
-                    alt=""
-                    className="h-36 w-full object-cover"
-                  />
+                  <div className="h-[168px] w-full overflow-hidden rounded-t-[12px]">
+                    <img
+                      src={room.photo_url}
+                      alt=""
+                      className="h-full w-full object-cover object-center"
+                    />
+                  </div>
                   <div className="space-y-2 p-3">
                     <div className="flex items-start justify-between gap-2">
                       <div>
