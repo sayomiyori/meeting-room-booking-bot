@@ -1,4 +1,5 @@
 import json
+import warnings
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,7 +27,8 @@ def _rooms():
     ]
 
 
-def test_parse_booking_intent_valid_json(monkeypatch):
+@pytest.mark.asyncio
+async def test_parse_booking_intent_valid_json(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
     get_settings.cache_clear()
     expected = ParsedIntent(
@@ -35,40 +37,170 @@ def test_parse_booking_intent_valid_json(monkeypatch):
         start_time="15:00",
         duration_minutes=60,
     )
+
+    class FakeCompletions:
+        async def create(self, **_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=expected.model_dump_json(),
+                        )
+                    )
+                ]
+            )
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
     monkeypatch.setattr(
-        "backend.services.nl_booking._call_groq",
-        lambda *_a, **_k: expected,
+        "openai.AsyncOpenAI",
+        lambda **_kwargs: FakeClient(),
     )
-    result = parse_booking_intent("большую завтра в 15 на час", _rooms())
+    result = await parse_booking_intent("большую завтра в 15 на час", _rooms())
     assert result == expected
 
 
-def test_parse_booking_intent_invalid_json(monkeypatch):
+@pytest.mark.asyncio
+async def test_parse_booking_intent_invalid_json(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
     get_settings.cache_clear()
 
-    def boom(*_a, **_k):
-        raise json.JSONDecodeError("Expecting value", "doc", 0)
+    class FakeCompletions:
+        async def create(self, **_kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="not-json{"))]
+            )
 
-    monkeypatch.setattr("backend.services.nl_booking._call_groq", boom)
-    assert parse_booking_intent("большую завтра", _rooms()) is None
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr("openai.AsyncOpenAI", lambda **_kwargs: FakeClient())
+    assert await parse_booking_intent("большую завтра", _rooms()) is None
 
 
-def test_parse_booking_intent_partial_fields(monkeypatch):
+@pytest.mark.asyncio
+async def test_parse_booking_intent_partial_fields(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
     get_settings.cache_clear()
-    # _call_groq returns None when any field is null after parse
-    monkeypatch.setattr(
-        "backend.services.nl_booking._call_groq",
-        lambda *_a, **_k: None,
-    )
-    assert parse_booking_intent("давай на следующей неделе как-нибудь", _rooms()) is None
+
+    class FakeCompletions:
+        async def create(self, **_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "room": None,
+                                    "date": None,
+                                    "start_time": None,
+                                    "duration_minutes": None,
+                                }
+                            )
+                        )
+                    )
+                ]
+            )
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr("openai.AsyncOpenAI", lambda **_kwargs: FakeClient())
+    assert await parse_booking_intent("давай на следующей неделе как-нибудь", _rooms()) is None
 
 
-def test_parse_booking_intent_without_api_key(monkeypatch):
+@pytest.mark.asyncio
+async def test_parse_booking_intent_without_api_key(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "")
     get_settings.cache_clear()
-    assert parse_booking_intent("большую завтра в 15 на час", _rooms()) is None
+    assert await parse_booking_intent("большую завтра в 15 на час", _rooms()) is None
+
+
+@pytest.mark.asyncio
+async def test_parse_booking_intent_repeated_calls_no_loop_closed(monkeypatch, capsys):
+    """Sequential /book-like calls must close AsyncOpenAI in-loop (no orphan aclose)."""
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    get_settings.cache_clear()
+
+    closed: list[bool] = []
+
+    class FakeCompletions:
+        async def create(self, **_kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "room": "Большая",
+                                    "date": "2026-08-10",
+                                    "start_time": "15:00",
+                                    "duration_minutes": 60,
+                                }
+                            )
+                        )
+                    )
+                ]
+            )
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            closed.append(True)
+            return False
+
+        async def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr("openai.AsyncOpenAI", lambda **_kwargs: FakeClient())
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(3):
+            result = await parse_booking_intent("большую завтра в 15 на час", _rooms())
+            assert result is not None
+            assert result.room == "Большая"
+
+    err = capsys.readouterr().err
+    joined = "\n".join(str(w.message) for w in caught) + "\n" + err
+    assert "Event loop is closed" not in joined
+    assert "Task exception was never retrieved" not in joined
+    assert len(closed) == 3
 
 
 @pytest.mark.asyncio
@@ -79,7 +211,7 @@ async def test_book_ambiguous_text_fallback(monkeypatch):
     get_settings.cache_clear()
     monkeypatch.setattr(
         "bot.handlers.parse_booking_intent",
-        lambda *_a, **_k: None,
+        AsyncMock(return_value=None),
     )
     monkeypatch.setattr(
         "bot.handlers._get_registered",
@@ -128,7 +260,7 @@ async def test_book_valid_builds_webapp_query(monkeypatch):
         start_time="15:00",
         duration_minutes=60,
     )
-    monkeypatch.setattr("bot.handlers.parse_booking_intent", lambda *_a, **_k: intent)
+    monkeypatch.setattr("bot.handlers.parse_booking_intent", AsyncMock(return_value=intent))
     monkeypatch.setattr(
         "bot.handlers._get_registered",
         AsyncMock(return_value=SimpleNamespace(role="member")),

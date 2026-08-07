@@ -207,7 +207,7 @@ async def cmd_book(message: Message) -> None:
         rooms = await RoomService(session).list_rooms()
         await session.commit()
 
-    intent = parse_booking_intent(args, rooms)
+    intent = await parse_booking_intent(args, rooms)
     if (
         intent is None
         or intent.room is None

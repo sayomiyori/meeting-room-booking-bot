@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import json
 from datetime import datetime
 from typing import Sequence
@@ -56,46 +54,11 @@ def _office_today_iso(office_timezone: str) -> str:
     return datetime.now(ZoneInfo(office_timezone)).date().isoformat()
 
 
-async def _call_groq_async(text: str, rooms: Sequence[Room], api_key: str) -> ParsedIntent | None:
-    from openai import AsyncOpenAI
-
-    settings = get_settings()
-    today_iso = _office_today_iso(settings.office_timezone)
-    room_names = [r.name for r in rooms]
-    system = _system_prompt(today_iso, settings.office_timezone, room_names)
-
-    client = AsyncOpenAI(
-        api_key=api_key,
-        base_url=GROQ_BASE_URL,
-        timeout=GROQ_TIMEOUT_SECONDS,
-    )
-    response = await client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": text},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.2,
-        max_completion_tokens=512,
-    )
-    raw = (response.choices[0].message.content or "").strip()
-    if not raw:
-        return None
-    data = json.loads(raw)
-    intent = ParsedIntent.model_validate(data)
-    if not _intent_complete(intent):
-        return None
-    return intent
-
-
-def _call_groq(text: str, rooms: Sequence[Room], api_key: str) -> ParsedIntent | None:
-    """Sync wrapper so handlers keep calling parse_booking_intent without await."""
-    return asyncio.run(_call_groq_async(text, rooms, api_key))
-
-
-def parse_booking_intent(text: str, rooms: list[Room]) -> ParsedIntent | None:
+async def parse_booking_intent(text: str, rooms: list[Room]) -> ParsedIntent | None:
     """Parse natural-language booking text into a fully populated intent, or None.
+
+    Creates and closes AsyncOpenAI inside this await so the httpx client never
+    outlives the request event loop (avoids "Event loop is closed" on aclose).
 
     User text is treated as extraction data only (enforced in the system prompt).
     Any Groq/network/JSON/validation failure → None (never raises).
@@ -106,11 +69,37 @@ def parse_booking_intent(text: str, rooms: list[Room]) -> ParsedIntent | None:
     if not (text or "").strip():
         return None
 
+    from openai import AsyncOpenAI
+
+    today_iso = _office_today_iso(settings.office_timezone)
+    room_names = [r.name for r in rooms]
+    system = _system_prompt(today_iso, settings.office_timezone, room_names)
+
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(_call_groq, text.strip(), rooms, settings.groq_api_key)
-            return future.result(timeout=GROQ_TIMEOUT_SECONDS)
-    except (concurrent.futures.TimeoutError, TimeoutError, ValidationError, json.JSONDecodeError):
+        async with AsyncOpenAI(
+            api_key=settings.groq_api_key,
+            base_url=GROQ_BASE_URL,
+            timeout=GROQ_TIMEOUT_SECONDS,
+        ) as client:
+            response = await client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": text.strip()},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_completion_tokens=512,
+            )
+        raw = (response.choices[0].message.content or "").strip()
+        if not raw:
+            return None
+        data = json.loads(raw)
+        intent = ParsedIntent.model_validate(data)
+        if not _intent_complete(intent):
+            return None
+        return intent
+    except (TimeoutError, ValidationError, json.JSONDecodeError):
         return None
     except Exception as exc:
         logger.warning(
