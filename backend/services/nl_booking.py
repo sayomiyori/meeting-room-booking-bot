@@ -18,11 +18,6 @@ from backend.models import Room
 logger = structlog.get_logger(__name__)
 _stdlib_logger = logging.getLogger(__name__)
 
-GROQ_TIMEOUT_SECONDS = 8.0
-GROQ_MODEL = "llama-3.3-70b-versatile"
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_MAX_COMPLETION_TOKENS = 300
-
 
 class ParsedIntent(BaseModel):
     room: str | None = None
@@ -99,18 +94,18 @@ async def parse_booking_intent(text: str, rooms: list[Room]) -> ParsedIntent | N
     try:
         async with AsyncOpenAI(
             api_key=settings.groq_api_key,
-            base_url=GROQ_BASE_URL,
-            timeout=GROQ_TIMEOUT_SECONDS,
+            base_url=settings.groq_base_url,
+            timeout=settings.groq_timeout_seconds,
         ) as client:
             response = await client.chat.completions.create(
-                model=GROQ_MODEL,
+                model=settings.groq_model,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": text.strip()},
                 ],
                 response_format={"type": "json_object"},
-                temperature=0.2,
-                max_completion_tokens=GROQ_MAX_COMPLETION_TOKENS,
+                temperature=settings.groq_temperature,
+                max_completion_tokens=settings.groq_max_completion_tokens,
             )
         raw = (response.choices[0].message.content or "").strip()
         if not raw:

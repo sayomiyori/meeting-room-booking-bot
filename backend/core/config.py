@@ -1,6 +1,18 @@
 from functools import lru_cache
+from typing import Annotated
 
+from pydantic import BeforeValidator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _empty_str_to_none(value: object) -> object:
+    """Allow BOOTSTRAP_ADMIN_TELEGRAM_ID= (empty) in .env without ValidationError."""
+    if value is None or value == "":
+        return None
+    return value
+
+
+OptionalInt = Annotated[int | None, BeforeValidator(_empty_str_to_none)]
 
 
 class Settings(BaseSettings):
@@ -26,6 +38,7 @@ class Settings(BaseSettings):
     max_duration_minutes: int = 240
     slot_step_minutes: int = 30
     soon_free_minutes: int = 30
+    default_booking_duration_minutes: int = 60
 
     # Office hours (Tier 2) — wall-clock in OFFICE_TIMEZONE
     office_timezone: str = "Europe/Moscow"
@@ -34,9 +47,14 @@ class Settings(BaseSettings):
 
     # Tier 3 (optional NL booking) — empty = /book disabled, app still boots
     groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    groq_timeout_seconds: float = 8.0
+    groq_max_completion_tokens: int = 300
+    groq_temperature: float = 0.2
 
-    # Access: bootstrap first admin when users table is empty (0 = disabled)
-    bootstrap_admin_telegram_id: int = 0
+    # Access: first admin when users table is empty (None / empty env = skip)
+    bootstrap_admin_telegram_id: OptionalInt = None
 
     # No-show auto-cancel
     no_show_enabled: bool = True

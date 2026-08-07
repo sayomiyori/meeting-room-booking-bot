@@ -27,7 +27,6 @@ class AddRoomFSM(StatesGroup):
 
 
 class EditRoomFSM(StatesGroup):
-    field = State()
     value = State()
 
 
@@ -130,6 +129,11 @@ async def cmd_admin(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "admin:close")
 async def cb_admin_close(callback: CallbackQuery, state: FSMContext) -> None:
+    if callback.from_user is None:
+        return
+    if not await _require_admin(callback.from_user.id):
+        await callback.answer(ADMIN_ONLY, show_alert=True)
+        return
     await state.clear()
     await callback.answer()
     if callback.message:

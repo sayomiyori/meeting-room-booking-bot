@@ -67,9 +67,17 @@ def normalize_user_text(text: str) -> str:
     return raw.strip(".,!?;:\"'«»")
 
 
-def apply_duration_default(intent: ParsedIntent, default: int = 60) -> ParsedIntent:
+def apply_duration_default(
+    intent: ParsedIntent,
+    default: int | None = None,
+) -> ParsedIntent:
     if intent.duration_minutes is None:
-        return intent.model_copy(update={"duration_minutes": default})
+        minutes = (
+            default
+            if default is not None
+            else get_settings().default_booking_duration_minutes
+        )
+        return intent.model_copy(update={"duration_minutes": minutes})
     return intent
 
 

@@ -353,8 +353,8 @@ class BookingService:
                         end=week_end,
                         recurring_group_id=group_id,
                     )
-                booking = await self.bookings.get_by_id(booking.id)
-                assert booking is not None
+                # Room already loaded above — avoid N+1 get_by_id per insert
+                booking.room = room
                 created.append(booking_to_out(booking))
             except IntegrityError:
                 skipped.append(RecurringSkipped(date=date_label, reason="занято"))
@@ -390,9 +390,8 @@ class BookingService:
 
     async def check_in(self, booking_id: int, user: TelegramUser) -> BookingOut:
         booking = await self.bookings.get_by_id(booking_id)
-        if booking is None or booking.canceled:
-            raise NotFoundError("Бронь не найдена")
-        if booking.telegram_id != user.id:
-            raise ForbiddenError("Нельзя подтвердить чужую бронь")
+        # Same message for missing vs foreign — avoid existence oracle via callback
+        if booking is None or booking.canceled or booking.telegram_id != user.id:
+            raise NotFoundError("Бронь не найдена или недоступна")
         booking = await self.bookings.mark_checked_in(booking)
         return booking_to_out(booking)
