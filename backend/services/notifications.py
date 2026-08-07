@@ -70,8 +70,16 @@ def format_booking_message(booking: BookingOut, *, title: str) -> str:
 
 
 def _log_notify_failure(event: str, telegram_id: int, exc: Exception) -> None:
-    token = get_settings().bot_token
-    logger.error(event, telegram_id=telegram_id, error=redact_secrets(str(exc), token))
+    settings = get_settings()
+    logger.error(
+        event,
+        telegram_id=telegram_id,
+        error=redact_secrets(
+            str(exc),
+            settings.bot_token,
+            webhook_secret=settings.webhook_secret,
+        ),
+    )
 
 
 async def notify_booking_created(telegram_id: int, booking: BookingOut) -> None:

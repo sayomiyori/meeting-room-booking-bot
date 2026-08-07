@@ -58,7 +58,7 @@ const DEBUG_TG_ID = import.meta.env.VITE_DEBUG_TELEGRAM_ID as string | undefined
 let cachedConfig: BookingConfig | null = null;
 let configPromise: Promise<BookingConfig> | null = null;
 
-export function getInitData(): string {
+function getInitData(): string {
   return window.Telegram?.WebApp?.initData ?? "";
 }
 

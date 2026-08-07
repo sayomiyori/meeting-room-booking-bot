@@ -39,3 +39,4 @@ Thumbs.db
 
 # Docker
 *.pem
+.env.backup

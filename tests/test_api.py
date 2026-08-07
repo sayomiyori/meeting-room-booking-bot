@@ -261,6 +261,22 @@ def test_validate_init_data_replay():
         validate_init_data(init, BOT_TOKEN, 300)
 
 
+def test_redact_secrets_masks_database_password_and_webhook():
+    from backend.core.logging_safe import redact_secrets
+
+    raw = (
+        "connect failed: postgresql+asyncpg://booking:s3cretPass@postgres:5432/booking "
+        f"bot={BOT_TOKEN} webhook=super-secret-webhook-token "
+        "https://api.telegram.org/bot123456:AAAleak/sendMessage"
+    )
+    out = redact_secrets(raw, BOT_TOKEN, webhook_secret="super-secret-webhook-token")
+    assert "s3cretPass" not in out
+    assert "booking:[REDACTED]@postgres" in out
+    assert BOT_TOKEN not in out
+    assert "super-secret-webhook-token" not in out
+    assert "api.telegram.org/bot[REDACTED]" in out
+
+
 def test_empty_day_slots_cover_window():
     from backend.services.booking import build_day_slots
 

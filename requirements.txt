@@ -10,7 +10,6 @@ apscheduler>=3.10.4
 slowapi>=0.1.9
 structlog>=24.4.0
 httpx>=0.28.0
-python-multipart>=0.0.17
 
 # Dev / test
 pytest>=8.3.0

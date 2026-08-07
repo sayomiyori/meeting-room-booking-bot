@@ -52,10 +52,6 @@ export function setOfficeTimezone(tz: string) {
   rebuildFormatters(tz);
 }
 
-export function getOfficeTimezone(): string {
-  return officeTimezone;
-}
-
 /** Short label for UI (МСК for Europe/Moscow, else IANA id). */
 export function officeZoneLabel(tz?: string): string {
   const zone = tz || officeTimezone;

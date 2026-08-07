@@ -68,7 +68,11 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.error(
                 "bot_shutdown_error",
-                error=redact_secrets(str(exc), settings.bot_token),
+                error=redact_secrets(
+                    str(exc),
+                    settings.bot_token,
+                    webhook_secret=settings.webhook_secret,
+                ),
             )
 
 
@@ -99,10 +103,18 @@ def create_app() -> FastAPI:
     async def unhandled(_request: Request, exc: Exception):
         logger.error(
             "unhandled_error",
-            error=redact_secrets(str(exc), settings.bot_token),
+            error=redact_secrets(
+                str(exc),
+                settings.bot_token,
+                webhook_secret=settings.webhook_secret,
+            ),
         )
         detail = (
-            redact_secrets(str(exc), settings.bot_token)
+            redact_secrets(
+                str(exc),
+                settings.bot_token,
+                webhook_secret=settings.webhook_secret,
+            )
             if settings.debug
             else "Внутренняя ошибка сервера"
         )

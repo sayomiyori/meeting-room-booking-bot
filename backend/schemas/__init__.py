@@ -53,10 +53,6 @@ class BookingOut(BaseModel):
     created_at: datetime
 
 
-class MessageOut(BaseModel):
-    detail: str
-
-
 class BookingConfigOut(BaseModel):
     """Public booking rules — safe to expose without auth."""
 

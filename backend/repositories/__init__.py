@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import Select, func, not_, select, text, update
+from sqlalchemy import Select, not_, select, text, update
 from sqlalchemy.dialects.postgresql import Range
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -117,18 +117,3 @@ class BookingRepository:
             update(Booking).where(Booking.id == booking_id).values(reminder_sent=True)
         )
         await self.session.flush()
-
-    async def count_active_overlapping(
-        self,
-        room_id: int,
-        start: datetime,
-        end: datetime,
-    ) -> int:
-        rng = Range(start, end, bounds="[)")
-        stmt = select(func.count()).select_from(Booking).where(
-            Booking.room_id == room_id,
-            not_(Booking.canceled),
-            Booking.during.op("&&")(rng),
-        )
-        result = await self.session.execute(stmt)
-        return int(result.scalar_one())
