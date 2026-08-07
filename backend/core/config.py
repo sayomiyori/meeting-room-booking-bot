@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     office_hours_start: int = 9
     office_hours_end: int = 18
 
+    # Tier 3 (optional NL booking) — empty = /book disabled, app still boots
+    groq_api_key: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

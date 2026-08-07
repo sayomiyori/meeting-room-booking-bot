@@ -110,3 +110,28 @@ export function formatOfficeDateTime(iso: string): string {
     hour12: false,
   }).format(new Date(iso));
 }
+
+/**
+ * Convert office wall-clock (YYYY-MM-DD + HH:MM) to a UTC ISO instant.
+ * Iteratively corrects for the configured office timezone offset.
+ */
+export function officeWallClockToUTCISO(dateISO: string, timeHHMM: string): string | null {
+  const [y, m, d] = dateISO.split("-").map(Number);
+  const [hh, mm] = timeHHMM.split(":").map(Number);
+  if ([y, m, d, hh, mm].some((n) => Number.isNaN(n))) return null;
+
+  let guess = Date.UTC(y, m - 1, d, hh, mm, 0);
+  for (let i = 0; i < 4; i++) {
+    const asDate = new Date(guess);
+    const gotDate = dateFmt.format(asDate);
+    const { hour, minute } = officeHourMinute(asDate);
+    if (gotDate === dateISO && hour === hh && minute === mm) {
+      return asDate.toISOString();
+    }
+    const [gy, gm, gd] = gotDate.split("-").map(Number);
+    const gotMs = Date.UTC(gy, gm - 1, gd, hour, minute, 0);
+    const wantMs = Date.UTC(y, m - 1, d, hh, mm, 0);
+    guess += wantMs - gotMs;
+  }
+  return new Date(guess).toISOString();
+}

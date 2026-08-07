@@ -14,6 +14,7 @@ def redact_secrets(
     bot_token: str = "",
     *,
     webhook_secret: str = "",
+    groq_api_key: str = "",
 ) -> str:
     """Strip secrets from exception text / URLs before logging or client responses."""
     redacted = _BOT_URL_RE.sub(r"\1[REDACTED]", text)
@@ -22,4 +23,6 @@ def redact_secrets(
         redacted = redacted.replace(bot_token, "[REDACTED]")
     if webhook_secret:
         redacted = redacted.replace(webhook_secret, "[REDACTED]")
+    if groq_api_key:
+        redacted = redacted.replace(groq_api_key, "[REDACTED]")
     return redacted

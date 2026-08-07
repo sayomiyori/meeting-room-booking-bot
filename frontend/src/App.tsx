@@ -18,9 +18,11 @@ import {
   formatOfficeDateTime,
   formatOfficeTime,
   officeTodayISO,
+  officeWallClockToUTCISO,
   officeZoneLabel,
   setOfficeTimezone,
 } from "@/lib/timezone";
+import { parseBookingQuery } from "@/lib/bookingQuery";
 
 type Step = "rooms" | "date" | "slots" | "pick" | "confirm" | "mine";
 
@@ -235,14 +237,60 @@ export default function App() {
         setOfficeTimezone(cfg.office_timezone);
         setConfig(cfg);
         setSelectedDate(officeTodayISO());
-        await loadRooms();
+        const list = await api.rooms();
+        setRooms(list);
+        const day = officeTodayISO();
+        const entries = await Promise.all(
+          list.map(async (room) => {
+            const res = await api.slots(room.id, day);
+            return [room.id, roomStatusFromSlots(res.slots)] as const;
+          }),
+        );
+        setStatuses(Object.fromEntries(entries));
+
+        const deep = parseBookingQuery(window.location.search);
+        if (deep) {
+          const room = list.find((r) => r.id === deep.roomId);
+          const startIso = officeWallClockToUTCISO(deep.date, deep.start);
+          if (room && startIso) {
+            const endIso = new Date(
+              new Date(startIso).getTime() + deep.duration * 60 * 1000,
+            ).toISOString();
+            const slotsRes = await api.slots(room.id, deep.date);
+            setSlots(slotsRes.slots);
+            setSelectedRoom(room);
+            setSelectedDate(deep.date);
+            const containing =
+              slotsRes.slots.find((s) => {
+                if (s.status !== "free") return false;
+                const s0 = new Date(s.start).getTime();
+                const s1 = new Date(s.end).getTime();
+                return s0 <= new Date(startIso).getTime() && s1 >= new Date(endIso).getTime();
+              }) ?? null;
+            const interval = containing ?? {
+              start: startIso,
+              end: new Date(
+                new Date(startIso).getTime() +
+                  Math.max(deep.duration, cfg.max_duration_minutes) * 60 * 1000,
+              ).toISOString(),
+              status: "free" as const,
+            };
+            setFreeInterval(interval);
+            setPickStartOption(startIso);
+            setPickDuration(deep.duration);
+            setPickStart(null);
+            setPickEnd(null);
+            setStep("pick");
+          }
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Не удалось загрузить данные");
       } finally {
         setReady(true);
       }
     })();
-  }, [loadRooms]);
+  }, []);
+
 
   // Refetch when returning from Telegram chat / another app (bot cancel, etc.)
   useEffect(() => {

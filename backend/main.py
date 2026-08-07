@@ -72,6 +72,7 @@ async def lifespan(app: FastAPI):
                     str(exc),
                     settings.bot_token,
                     webhook_secret=settings.webhook_secret,
+                    groq_api_key=settings.groq_api_key,
                 ),
             )
 
@@ -107,6 +108,7 @@ def create_app() -> FastAPI:
                 str(exc),
                 settings.bot_token,
                 webhook_secret=settings.webhook_secret,
+                groq_api_key=settings.groq_api_key,
             ),
         )
         detail = (
@@ -114,6 +116,7 @@ def create_app() -> FastAPI:
                 str(exc),
                 settings.bot_token,
                 webhook_secret=settings.webhook_secret,
+                groq_api_key=settings.groq_api_key,
             )
             if settings.debug
             else "Внутренняя ошибка сервера"

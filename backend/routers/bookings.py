@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.core.config import get_settings
 from backend.core.database import get_db
 from backend.core.exceptions import AppError, ConflictError
+from backend.core.rate_limit import allow_telegram_booking_rate
 from backend.core.security import TelegramUser, require_telegram_user
 from backend.schemas import BookingCreate, BookingOut
 from backend.services.booking import BookingService
@@ -29,13 +30,13 @@ def _telegram_rate_key(request: Request) -> str:
 
 
 @router.post("", response_model=BookingOut, status_code=201)
-@limiter.limit("5/minute", key_func=_telegram_rate_key)
 async def create_booking(
-    request: Request,
     body: BookingCreate,
     db: AsyncSession = Depends(get_db),
     user: TelegramUser = Depends(require_telegram_user),
 ) -> BookingOut:
+    if not allow_telegram_booking_rate(user.id):
+        raise HTTPException(status_code=429, detail="Слишком много запросов, подождите минуту")
     service = BookingService(db)
     try:
         booking = await service.create(body.room_id, body.start, body.end, user)

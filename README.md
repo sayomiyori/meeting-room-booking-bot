@@ -8,8 +8,10 @@ Telegram Mini App + FastAPI + PostgreSQL + aiogram 3 для бронирован
 
 - Список комнат и занятость на день (публичные слоты без PII)
 - Бронирование 15 мин – 4 часа с защитой от гонок (PostgreSQL `EXCLUDE`)
+- Выбор конкретного времени внутри свободного интервала: начало с шагом 30 мин + длительность
+- Жёсткие рабочие часы 09:00–18:00 МСК как граница бронирования и слотов
 - Telegram Mini App с тёмным UI и flip-индикатором занятости
-- Бот: `/start`, `/mybookings` (отмена), `/help`, напоминания за N минут
+- Бот: `/start`, `/book` — бронирование на естественном языке через Groq (`openai/gpt-oss-120b`), результат парсинга открывает Mini App на экране подтверждения с предзаполненным временем — пользователь всегда видит и может поправить перед реальным бронированием; `/mybookings` (отмена), `/help`, напоминания за N минут
 - HMAC-валидация `initData` на каждый запрос к `/api/bookings*`
 
 ## Быстрый старт
@@ -52,6 +54,8 @@ erDiagram
 
 Частичный `EXCLUDE USING gist (room_id WITH =, during WITH &&) WHERE (NOT canceled)` гарантирует отсутствие пересечений активных броней на уровне БД.
 
+Правила бронирования (office hours, timezone, шаг сетки, max duration) отдаются с бэкенда через `GET /api/config` — фронт их только отображает, без хардкода.
+
 ## Почему так
 
 | Решение | Зачем |
@@ -61,16 +65,31 @@ erDiagram
 | HMAC `initData` + `auth_date` ≤ 5 мин | `telegram_id` нельзя подделать из body; replay ограничен |
 | Same-origin StaticFiles | Mini App и API без CORS и без утечки bot token во frontend-бандл |
 | Слоты без имени/telegram_id | Публичное расписание не раскрывает, кто сидел в комнате |
+| LLM только парсит intent, не создаёт бронь напрямую | Модель может ошибиться на неоднозначном тексте; результат проходит через тот же pick/confirm экран и бизнес-валидацию, что и ручной ввод |
+
+## Аудит перед сдачей
+
+Самостоятельный security и code-quality аудит перед сдачей (`review-security` + `sql-optimizer`). Устранено:
+
+- misconfiguration debug-auth в `.env.example` (`DEBUG=false`, пустой `WEBHOOK_SECRET` вместо плейсхолдера)
+- partial-индексы GiST не матчились из-за `IS false` вместо `NOT canceled` (подтверждено `EXPLAIN ANALYZE`)
+- rate limit на `POST /telegram/webhook`
+- `redact_secrets` расширен на `DATABASE_URL` / webhook secret
+- удалён мёртвый код (неиспользуемые методы, схемы, зависимости)
+
+Изначально для `/book` пробовали Gemini Flash, но provisioning API-ключа упёрся в новое требование Google Cloud (обязательная 2FA + нестабильный доступ к созданию проекта на момент тестирования) — переключились на Groq (`openai/gpt-oss-120b`); интерфейс сервиса абстрагирован, смена заняла менее часа.
 
 ## Переменные окружения
 
 См. [.env.example](.env.example). Секреты (`BOT_TOKEN`, `WEBHOOK_SECRET`, `DATABASE_URL`) только в `.env` / секретах платформы — не в git и не во frontend.
 
+Опционально: `GROQ_API_KEY` — без него `/book` отвечает «LLM-бронирование недоступно», остальной функционал не затронут. Ключ бесплатно без карты: [console.groq.com/keys](https://console.groq.com/keys).
+
 ## Деплой (Railway / Render + Neon)
 
 1. Создайте БД на Neon, скопируйте async URL (`postgresql+asyncpg://...`).
 2. Задеплойте этот репозиторий на Railway/Render (Dockerfile уже multi-stage).
-3. Задайте env: `DATABASE_URL`, `BOT_TOKEN`, `WEBAPP_URL` (= HTTPS URL сервиса), `PUBLIC_BASE_URL` (тот же origin), `WEBHOOK_SECRET`, `DEBUG=false`.
+3. Задайте env: `DATABASE_URL`, `BOT_TOKEN`, `WEBAPP_URL` (= HTTPS URL сервиса), `PUBLIC_BASE_URL` (тот же origin), `WEBHOOK_SECRET`, `DEBUG=false`, опционально `GROQ_API_KEY`.
 4. После деплоя бот вызовет `setWebhook` на `{PUBLIC_BASE_URL}{WEBHOOK_PATH}` с `secret_token`.
 
 Postgres в compose наружу не публикуется (`expose`, не `ports`) — в проде Neon и так вне compose.
