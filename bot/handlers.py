@@ -1,53 +1,44 @@
-from datetime import UTC, datetime, timedelta
-from urllib.parse import urlencode
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
-    WebAppInfo,
 )
 
 from backend.core.access import ACCESS_DENIED, ADMIN_ONLY
 from backend.core.config import get_settings
 from backend.core.database import async_session_factory
-from backend.core.exceptions import AppError
 from backend.core.rate_limit import allow_telegram_booking_rate
 from backend.core.security import TelegramUser
 from backend.models import UserRole
 from backend.repositories import UserRepository
+from backend.services.book_clarification import (
+    apply_duration_default,
+    first_missing_field,
+    resolve_room_canonical,
+)
 from backend.services.booking import BookingService, RoomService
-from backend.services.nl_booking import parse_booking_intent
+from backend.services.nl_booking import ParsedIntent, parse_booking_intent
 from backend.services.notifications import format_office_clock, office_zone_label
+from bot.book_clarify import clear_clarification_if_any, finish_book_from_intent, start_clarification
+from bot.book_common import (
+    FALLBACK_PARSE,
+    LLM_UNAVAILABLE,
+    RATE_LIMITED,
+    webapp_keyboard,
+)
 
 router = Router(name="commands")
 
-FALLBACK_PARSE = "Не удалось разобрать запрос, попробуйте /start для обычного бронирования"
-LLM_UNAVAILABLE = "LLM-бронирование недоступно"
-RATE_LIMITED = "Слишком много запросов, подождите минуту"
 INVITE_USAGE = (
     "Использование: /invite <telegram_id>\n"
     "Коллега может узнать свой id через @userinfobot (команда /start)."
 )
-
-
-def webapp_keyboard(url: str | None = None) -> InlineKeyboardMarkup:
-    settings = get_settings()
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="Забронировать",
-                    web_app=WebAppInfo(url=url or settings.webapp_url),
-                )
-            ]
-        ]
-    )
 
 
 def _command_args(message: Message, command: str) -> str:
@@ -69,50 +60,9 @@ async def _get_registered(telegram_id: int):
     return user
 
 
-def _find_room_id(rooms: list, name: str) -> int | None:
-    needle = name.casefold()
-    for room in rooms:
-        if room.name.casefold() == needle:
-            return room.id
-    return None
-
-
-def _intent_to_window(
-    date_str: str,
-    start_time: str,
-    duration_minutes: int,
-) -> tuple[datetime, datetime]:
-    settings = get_settings()
-    tz = ZoneInfo(settings.office_timezone)
-    start_local = datetime.strptime(f"{date_str} {start_time}", "%Y-%m-%d %H:%M").replace(
-        tzinfo=tz
-    )
-    end_local = start_local + timedelta(minutes=duration_minutes)
-    return start_local.astimezone(UTC), end_local.astimezone(UTC)
-
-
-def build_book_webapp_url(
-    *,
-    room_id: int,
-    date: str,
-    start_time: str,
-    duration_minutes: int,
-) -> str:
-    settings = get_settings()
-    base = settings.webapp_url.rstrip("/")
-    query = urlencode(
-        {
-            "room": str(room_id),
-            "date": date,
-            "start": start_time,
-            "duration": str(duration_minutes),
-        }
-    )
-    return f"{base}?{query}"
-
-
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    await clear_clarification_if_any(state)
     if message.from_user is None:
         return
     registered = await _get_registered(message.from_user.id)
@@ -127,7 +77,8 @@ async def cmd_start(message: Message) -> None:
 
 
 @router.message(Command("help"))
-async def cmd_help(message: Message) -> None:
+async def cmd_help(message: Message, state: FSMContext) -> None:
+    await clear_clarification_if_any(state)
     await message.answer(
         "<b>Что умеет бот</b>\n"
         "• /start — открыть Mini App для бронирования\n"
@@ -144,7 +95,8 @@ async def cmd_help(message: Message) -> None:
 
 
 @router.message(Command("invite"))
-async def cmd_invite(message: Message) -> None:
+async def cmd_invite(message: Message, state: FSMContext) -> None:
+    await clear_clarification_if_any(state)
     if message.from_user is None:
         return
     admin = await _get_registered(message.from_user.id)
@@ -178,7 +130,8 @@ async def cmd_invite(message: Message) -> None:
 
 
 @router.message(Command("book"))
-async def cmd_book(message: Message) -> None:
+async def cmd_book(message: Message, state: FSMContext) -> None:
+    await clear_clarification_if_any(state)
     if message.from_user is None:
         return
 
@@ -199,6 +152,7 @@ async def cmd_book(message: Message) -> None:
         )
         return
 
+    # One rate-limit slot for the whole /book + clarification dialogue
     if not allow_telegram_booking_rate(message.from_user.id):
         await message.answer(RATE_LIMITED)
         return
@@ -206,56 +160,23 @@ async def cmd_book(message: Message) -> None:
     async with async_session_factory() as session:
         rooms = await RoomService(session).list_rooms()
         await session.commit()
+    room_names = [r.name for r in rooms]
 
     intent = await parse_booking_intent(args, rooms)
-    if (
-        intent is None
-        or intent.room is None
-        or intent.date is None
-        or intent.start_time is None
-        or intent.duration_minutes is None
-    ):
-        await message.answer(FALLBACK_PARSE)
+    if intent is None:
+        intent = ParsedIntent()
+    intent = apply_duration_default(resolve_room_canonical(intent, room_names))
+
+    if first_missing_field(intent) is not None:
+        await start_clarification(message, state, intent, room_names)
         return
 
-    room_id = _find_room_id(rooms, intent.room)
-    if room_id is None:
-        await message.answer(FALLBACK_PARSE)
-        return
-
-    room_name = next(r.name for r in rooms if r.id == room_id)
-
-    try:
-        start_utc, end_utc = _intent_to_window(
-            intent.date, intent.start_time, intent.duration_minutes
-        )
-    except ValueError:
-        await message.answer(FALLBACK_PARSE)
-        return
-
-    async with async_session_factory() as session:
-        try:
-            BookingService(session).validate_window(start_utc, end_utc)
-        except AppError as exc:
-            await message.answer(exc.message)
-            return
-
-    url = build_book_webapp_url(
-        room_id=room_id,
-        date=intent.date,
-        start_time=intent.start_time,
-        duration_minutes=intent.duration_minutes,
-    )
-    end_label = format_office_clock(end_utc, with_date=False)
-    text = (
-        f"Понял: {room_name}, {intent.date} {intent.start_time}–{end_label}. "
-        "Проверьте и подтвердите:"
-    )
-    await message.answer(text, reply_markup=webapp_keyboard(url))
+    await finish_book_from_intent(message, state, intent, room_names)
 
 
 @router.message(Command("mybookings"))
-async def cmd_mybookings(message: Message) -> None:
+async def cmd_mybookings(message: Message, state: FSMContext) -> None:
+    await clear_clarification_if_any(state)
     if message.from_user is None:
         return
     if await _get_registered(message.from_user.id) is None:
@@ -311,7 +232,6 @@ async def cmd_mybookings(message: Message) -> None:
 async def cb_cancel(callback: CallbackQuery) -> None:
     if callback.from_user is None or callback.data is None:
         return
-    # skip cancel_series:
     if callback.data.startswith("cancel_series:"):
         return
     if await _get_registered(callback.from_user.id) is None:

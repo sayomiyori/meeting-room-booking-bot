@@ -118,12 +118,12 @@ async def parse_booking_intent(text: str, rooms: list[Room]) -> ParsedIntent | N
             return None
         data = json.loads(raw)
         intent = ParsedIntent.model_validate(data)
+        # Return partial intents so /book can run a clarification dialogue
         if not _intent_complete(intent):
-            _log_parse_failure(
-                settings,
-                f"incomplete intent fields: {intent.model_dump()}",
+            logger.info(
+                "nl_booking_partial_intent",
+                fields=intent.model_dump(),
             )
-            return None
         return intent
     except Exception as exc:
         _log_parse_failure(settings, exc)

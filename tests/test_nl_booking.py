@@ -134,7 +134,10 @@ async def test_parse_booking_intent_partial_fields(monkeypatch):
             return False
 
     monkeypatch.setattr("openai.AsyncOpenAI", lambda **_kwargs: FakeClient())
-    assert await parse_booking_intent("давай на следующей неделе как-нибудь", _rooms()) is None
+    result = await parse_booking_intent("давай на следующей неделе как-нибудь", _rooms())
+    assert result is not None
+    assert result.room is None
+    assert result.date is None
 
 
 @pytest.mark.asyncio
@@ -246,8 +249,13 @@ async def test_parse_booking_intent_repeated_calls_no_loop_closed(monkeypatch, c
 
 
 @pytest.mark.asyncio
-async def test_book_ambiguous_text_fallback(monkeypatch):
-    from bot.handlers import FALLBACK_PARSE, cmd_book
+async def test_book_ambiguous_text_starts_clarification(monkeypatch):
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    from bot.book_clarify import BookingClarification
+    from bot.handlers import cmd_book
 
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
     get_settings.cache_clear()
@@ -278,18 +286,26 @@ async def test_book_ambiguous_text_fallback(monkeypatch):
         lambda: _FakeSession(),
     )
 
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=1, user_id=4242))
+
     answers: list[str] = []
     message = MagicMock()
     message.from_user = MagicMock(id=4242)
     message.text = "/book давай на следующей неделе как-нибудь"
     message.answer = AsyncMock(side_effect=lambda text, **_k: answers.append(text))
 
-    await cmd_book(message)
-    assert answers == [FALLBACK_PARSE]
+    await cmd_book(message, state)
+    assert await state.get_state() == BookingClarification.awaiting_clarification.state
+    assert "комнат" in answers[-1].casefold()
 
 
 @pytest.mark.asyncio
 async def test_book_valid_builds_webapp_query(monkeypatch):
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
     from bot.handlers import cmd_book
 
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
@@ -325,8 +341,10 @@ async def test_book_valid_builds_webapp_query(monkeypatch):
             return start, end
 
     monkeypatch.setattr("bot.handlers.RoomService", FakeRoomService)
-    monkeypatch.setattr("bot.handlers.BookingService", FakeBookingService)
+    monkeypatch.setattr("bot.book_clarify.RoomService", FakeRoomService)
+    monkeypatch.setattr("bot.book_clarify.BookingService", FakeBookingService)
     monkeypatch.setattr("bot.handlers.async_session_factory", lambda: _FakeSession())
+    monkeypatch.setattr("bot.book_clarify.async_session_factory", lambda: _FakeSession())
 
     captured: dict = {}
 
@@ -339,7 +357,11 @@ async def test_book_valid_builds_webapp_query(monkeypatch):
     message.text = "/book большую 2026-08-10 в 15 на час"
     message.answer = AsyncMock(side_effect=capture_answer)
 
-    await cmd_book(message)
+    state = FSMContext(
+        storage=MemoryStorage(),
+        key=StorageKey(bot_id=1, chat_id=1, user_id=4242),
+    )
+    await cmd_book(message, state)
 
     assert "Понял: Большая, 2026-08-10 15:00" in captured["text"]
     button = captured["markup"].inline_keyboard[0][0]
@@ -353,7 +375,12 @@ async def test_book_valid_builds_webapp_query(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_book_without_groq_key(monkeypatch):
-    from bot.handlers import LLM_UNAVAILABLE, cmd_book
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    from bot.book_common import LLM_UNAVAILABLE
+    from bot.handlers import cmd_book
 
     monkeypatch.setenv("GROQ_API_KEY", "")
     get_settings.cache_clear()
@@ -368,7 +395,11 @@ async def test_book_without_groq_key(monkeypatch):
     message.text = "/book большую завтра в 15 на час"
     message.answer = AsyncMock(side_effect=lambda text, **_k: answers.append(text))
 
-    await cmd_book(message)
+    state = FSMContext(
+        storage=MemoryStorage(),
+        key=StorageKey(bot_id=1, chat_id=1, user_id=1),
+    )
+    await cmd_book(message, state)
     assert answers == [LLM_UNAVAILABLE]
 
 

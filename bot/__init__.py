@@ -8,10 +8,12 @@ from backend.core.config import get_settings
 from backend.routers.bookings import limiter
 from backend.services.notifications import get_bot
 from bot.admin import router as admin_router
+from bot.book_clarify import router as book_clarify_router
 from bot.handlers import router as commands_router
 
 dp = Dispatcher(storage=MemoryStorage())
 dp.include_router(commands_router)
+dp.include_router(book_clarify_router)
 dp.include_router(admin_router)
 
 webhook_router = APIRouter(tags=["telegram"])

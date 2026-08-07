@@ -15,6 +15,7 @@ from backend.core.exceptions import AppError
 from backend.models import UserRole
 from backend.repositories import UserRepository
 from backend.services.booking import RoomService
+from bot.book_clarify import clear_clarification_if_any
 
 router = Router(name="admin")
 
@@ -117,6 +118,7 @@ def _edit_fields_keyboard(room_id: int) -> InlineKeyboardMarkup:
 
 @router.message(Command("admin"))
 async def cmd_admin(message: Message, state: FSMContext) -> None:
+    await clear_clarification_if_any(state)
     if message.from_user is None:
         return
     if not await _require_admin(message.from_user.id):
