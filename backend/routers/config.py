@@ -17,4 +17,5 @@ async def booking_config() -> BookingConfigOut:
         max_duration_minutes=s.max_duration_minutes,
         slot_step_minutes=s.slot_step_minutes,
         soon_free_minutes=s.soon_free_minutes,
+        max_recurring_weeks=s.max_recurring_weeks,
     )

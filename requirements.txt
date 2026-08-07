@@ -11,6 +11,7 @@ slowapi>=0.1.9
 structlog>=24.4.0
 httpx>=0.28.0
 openai>=1.59.0
+sentry-sdk[fastapi]>=2.19.0
 
 # Dev / test
 pytest>=8.3.0

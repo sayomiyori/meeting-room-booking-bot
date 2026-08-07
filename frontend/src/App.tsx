@@ -156,6 +156,8 @@ export default function App() {
   const [pickDuration, setPickDuration] = useState<number | null>(null);
   const [pickStart, setPickStart] = useState<string | null>(null);
   const [pickEnd, setPickEnd] = useState<string | null>(null);
+  const [recurring, setRecurring] = useState(false);
+  const [recurringWeeks, setRecurringWeeks] = useState(2);
   const [mine, setMine] = useState<Booking[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -352,6 +354,8 @@ export default function App() {
     setPickDuration(null);
     setPickStart(null);
     setPickEnd(null);
+    setRecurring(false);
+    setRecurringWeeks(2);
     setError(null);
     setStep("pick");
   }
@@ -377,11 +381,32 @@ export default function App() {
   }
 
   async function confirmBooking() {
-    if (!selectedRoom || !pickStart || !pickEnd) return;
+    if (!selectedRoom || !pickStart || !pickEnd || !config) return;
     setBusy(true);
     setError(null);
     try {
-      await api.createBooking(selectedRoom.id, pickStart, pickEnd);
+      if (recurring) {
+        const weeks = Math.min(
+          Math.max(recurringWeeks, 2),
+          config.max_recurring_weeks,
+        );
+        const result = await api.createRecurringBooking(
+          selectedRoom.id,
+          pickStart,
+          pickEnd,
+          weeks,
+        );
+        if (result.skipped.length > 0) {
+          const skipped = result.skipped
+            .map((s) => `${s.date} (${s.reason})`)
+            .join(", ");
+          setError(
+            `Создано ${result.created.length}, пропущено: ${skipped}`,
+          );
+        }
+      } else {
+        await api.createBooking(selectedRoom.id, pickStart, pickEnd);
+      }
       window.Telegram?.WebApp?.HapticFeedback?.impactOccurred("medium");
       await openMine();
     } catch (e) {
@@ -412,6 +437,19 @@ export default function App() {
       await loadMine();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Не удалось отменить");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelSeries(groupId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.cancelRecurringSeries(groupId);
+      await loadMine();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось отменить серию");
     } finally {
       setBusy(false);
     }
@@ -625,6 +663,37 @@ export default function App() {
                 </div>
               </div>
 
+              <div className="rounded-[12px] bg-panel p-4">
+                <label className="flex items-center justify-between gap-3 text-sm font-medium">
+                  <span>Повторять еженедельно</span>
+                  <input
+                    type="checkbox"
+                    checked={recurring}
+                    onChange={(e) => setRecurring(e.target.checked)}
+                    className="h-4 w-4 accent-[var(--color-accent)]"
+                  />
+                </label>
+                {recurring && (
+                  <div className="mt-3">
+                    <p className="mb-2 text-sm text-muted">Число недель</p>
+                    <div className="flex flex-wrap gap-2">
+                      {Array.from(
+                        { length: config.max_recurring_weeks - 1 },
+                        (_, i) => i + 2,
+                      ).map((w) => (
+                        <ChoiceChip
+                          key={w}
+                          active={recurringWeeks === w}
+                          onClick={() => setRecurringWeeks(w)}
+                        >
+                          {w}
+                        </ChoiceChip>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <GhostButton
                 className="w-full"
                 disabled={
@@ -655,6 +724,9 @@ export default function App() {
                 <br />
                 {formatOfficeTime(pickStart, "start")} — {formatOfficeTime(pickEnd, "end")}{" "}
                 {zoneLabel} · {selectedDate}
+                {recurring && config
+                  ? ` · ${Math.min(Math.max(recurringWeeks, 2), config.max_recurring_weeks)} нед.`
+                  : null}
               </p>
               <div className="mt-5 flex gap-2">
                 <GhostButton className="flex-1" disabled={busy} onClick={confirmBooking}>
@@ -678,9 +750,19 @@ export default function App() {
                     {formatOfficeDateTime(b.start)} — {formatOfficeTime(b.end, "end")}{" "}
                     {zoneLabel}
                   </p>
-                  <GhostButton className="mt-3" disabled={busy} onClick={() => cancel(b.id)}>
-                    Отменить
-                  </GhostButton>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <GhostButton disabled={busy} onClick={() => cancel(b.id)}>
+                      Отменить
+                    </GhostButton>
+                    {b.recurring_group_id && (
+                      <GhostButton
+                        disabled={busy}
+                        onClick={() => cancelSeries(b.recurring_group_id!)}
+                      >
+                        Отменить всю серию
+                      </GhostButton>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

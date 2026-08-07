@@ -23,6 +23,7 @@ export type Booking = {
   end: string;
   canceled: boolean;
   created_at: string;
+  recurring_group_id: string | null;
 };
 
 export type BookingConfig = {
@@ -33,6 +34,12 @@ export type BookingConfig = {
   max_duration_minutes: number;
   slot_step_minutes: number;
   soon_free_minutes: number;
+  max_recurring_weeks: number;
+};
+
+export type RecurringBookingResult = {
+  created: Booking[];
+  skipped: { date: string; reason: string }[];
 };
 
 type TelegramWebApp = {
@@ -124,9 +131,23 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ room_id, start, end }),
     }),
+  createRecurringBooking: (
+    room_id: number,
+    start: string,
+    end: string,
+    weeks: number,
+  ) =>
+    request<RecurringBookingResult>("/api/bookings/recurring", {
+      method: "POST",
+      body: JSON.stringify({ room_id, start, end, weeks }),
+    }),
   myBookings: () => request<Booking[]>("/api/bookings/my"),
   cancelBooking: (id: number) =>
     request<Booking>(`/api/bookings/${id}/cancel`, { method: "POST" }),
+  cancelRecurringSeries: (groupId: string) =>
+    request<Booking[]>(`/api/bookings/recurring/${groupId}/cancel`, {
+      method: "POST",
+    }),
 };
 
 export function initTelegramChrome() {

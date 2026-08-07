@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime, timedelta
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import IntegrityError
@@ -15,7 +16,7 @@ from backend.core.exceptions import (
 from backend.core.security import TelegramUser
 from backend.models import Booking
 from backend.repositories import BookingRepository, RoomRepository
-from backend.schemas import BookingOut, SlotPublic, SlotStatus, SlotsResponse
+from backend.schemas import BookingOut, RecurringBookingOut, RecurringSkipped, SlotPublic, SlotStatus, SlotsResponse
 from backend.services.notifications import notify_booking_canceled
 
 
@@ -65,6 +66,7 @@ def booking_to_out(booking: Booking) -> BookingOut:
         end=end,
         canceled=booking.canceled,
         created_at=booking.created_at,
+        recurring_group_id=booking.recurring_group_id,
     )
 
 
@@ -90,12 +92,10 @@ def bookable_from(
     day_end = _ensure_aware(day_end)
 
     if now.date() > day_start.date():
-        # Requested calendar day is entirely in the past
         return None
     if now.date() < day_start.date():
         return day_start
 
-    # Today: combine with office window (day_end may be office close, not midnight)
     if now >= day_end:
         return None
     start = max(day_start, ceil_to_minutes(now, step_minutes))
@@ -113,12 +113,7 @@ def build_day_slots(
     step_minutes: int | None = None,
     soon_free_minutes: int | None = None,
 ) -> list[SlotPublic]:
-    """Merge busy bookings with free gaps for [day_start, day_end).
-
-    For *today*, free gaps start at max(day_start, ceil_step(now)) — so the UI
-    never offers past times. If the whole day (or office window) has passed,
-    free gaps are omitted. Never emits zero-length intervals.
-    """
+    """Merge busy bookings with free gaps for [day_start, day_end)."""
     settings = get_settings()
     if step_minutes is None:
         step_minutes = settings.slot_step_minutes
@@ -149,12 +144,10 @@ def build_day_slots(
     cursor = available
     for busy in busy_slots:
         if busy.end <= cursor:
-            # Entirely in the past relative to bookable window — still show busy
             slots.append(busy)
             continue
         if busy.start > cursor:
             slots.append(SlotPublic(start=cursor, end=busy.start, status=SlotStatus.free))
-        # Clip busy display start for ordering; keep full busy interval in list
         slots.append(busy)
         cursor = max(cursor, busy.end)
     if cursor < day_end:
@@ -169,11 +162,11 @@ class RoomService:
         self.bookings = BookingRepository(session)
         self.settings = settings or get_settings()
 
-    async def list_rooms(self):
-        return await self.rooms.list_all()
+    async def list_rooms(self, *, active_only: bool = True):
+        return await self.rooms.list_all(active_only=active_only)
 
     async def get_slots(self, room_id: int, day: date) -> SlotsResponse:
-        room = await self.rooms.get_by_id(room_id)
+        room = await self.rooms.get_by_id(room_id, active_only=True)
         if room is None:
             raise NotFoundError("Комната не найдена")
 
@@ -193,6 +186,55 @@ class RoomService:
             soon_free_minutes=self.settings.soon_free_minutes,
         )
         return SlotsResponse(room_id=room_id, date=day.isoformat(), slots=slots)
+
+    async def create_room(
+        self,
+        *,
+        name: str,
+        capacity: int,
+        description: str = "",
+    ):
+        name = name.strip()
+        if not name:
+            raise ValidationAppError("Название комнаты не может быть пустым")
+        if capacity < 1:
+            raise ValidationAppError("Вместимость должна быть >= 1")
+        return await self.rooms.create(
+            name=name,
+            capacity=capacity,
+            description=description.strip(),
+            photo_url="",
+        )
+
+    async def update_room(
+        self,
+        room_id: int,
+        *,
+        name: str | None = None,
+        capacity: int | None = None,
+        description: str | None = None,
+    ):
+        room = await self.rooms.get_by_id(room_id)
+        if room is None:
+            raise NotFoundError("Комната не найдена")
+        if name is not None:
+            name = name.strip()
+            if not name:
+                raise ValidationAppError("Название комнаты не может быть пустым")
+        if capacity is not None and capacity < 1:
+            raise ValidationAppError("Вместимость должна быть >= 1")
+        return await self.rooms.update_fields(
+            room,
+            name=name,
+            capacity=capacity,
+            description=description.strip() if description is not None else None,
+        )
+
+    async def set_room_active(self, room_id: int, active: bool):
+        room = await self.rooms.get_by_id(room_id)
+        if room is None:
+            raise NotFoundError("Комната не найдена")
+        return await self.rooms.set_active(room, active)
 
 
 class BookingService:
@@ -237,9 +279,17 @@ class BookingService:
 
         return start, end
 
-    async def create(self, payload_room_id: int, start: datetime, end: datetime, user: TelegramUser) -> BookingOut:
+    async def create(
+        self,
+        payload_room_id: int,
+        start: datetime,
+        end: datetime,
+        user: TelegramUser,
+        *,
+        recurring_group_id: UUID | None = None,
+    ) -> BookingOut:
         start, end = self.validate_window(start, end)
-        room = await self.rooms.get_by_id(payload_room_id)
+        room = await self.rooms.get_by_id(payload_room_id, active_only=True)
         if room is None:
             raise NotFoundError("Комната не найдена")
 
@@ -250,15 +300,66 @@ class BookingService:
                 user_display_name=user.display_name,
                 start=start,
                 end=end,
+                recurring_group_id=recurring_group_id,
             )
         except IntegrityError as exc:
             await self.session.rollback()
             raise ConflictError("Слот только что заняли") from exc
 
-        # Reload with room for notification formatting
         booking = await self.bookings.get_by_id(booking.id)
         assert booking is not None
         return booking_to_out(booking)
+
+    async def create_recurring(
+        self,
+        payload_room_id: int,
+        start: datetime,
+        end: datetime,
+        weeks: int,
+        user: TelegramUser,
+    ) -> RecurringBookingOut:
+        max_weeks = self.settings.max_recurring_weeks
+        if weeks < 2 or weeks > max_weeks:
+            raise ValidationAppError(f"Число недель должно быть от 2 до {max_weeks}")
+
+        start, end = self.validate_window(start, end)
+        room = await self.rooms.get_by_id(payload_room_id, active_only=True)
+        if room is None:
+            raise NotFoundError("Комната не найдена")
+
+        group_id = uuid4()
+        created: list[BookingOut] = []
+        skipped: list[RecurringSkipped] = []
+        tz = ZoneInfo(self.settings.office_timezone)
+
+        for week in range(weeks):
+            week_start = start + timedelta(weeks=week)
+            week_end = end + timedelta(weeks=week)
+            date_label = week_start.astimezone(tz).date().isoformat()
+            try:
+                # Re-validate office hours / past for each occurrence
+                self.validate_window(week_start, week_end)
+            except AppError as exc:
+                skipped.append(RecurringSkipped(date=date_label, reason=exc.message))
+                continue
+
+            try:
+                async with self.session.begin_nested():
+                    booking = await self.bookings.create(
+                        room_id=payload_room_id,
+                        telegram_id=user.id,
+                        user_display_name=user.display_name,
+                        start=week_start,
+                        end=week_end,
+                        recurring_group_id=group_id,
+                    )
+                booking = await self.bookings.get_by_id(booking.id)
+                assert booking is not None
+                created.append(booking_to_out(booking))
+            except IntegrityError:
+                skipped.append(RecurringSkipped(date=date_label, reason="занято"))
+
+        return RecurringBookingOut(created=created, skipped=skipped)
 
     async def my_bookings(self, user: TelegramUser) -> list[BookingOut]:
         rows = await self.bookings.list_active_for_user(user.id)
@@ -274,3 +375,24 @@ class BookingService:
         out = booking_to_out(booking)
         await notify_booking_canceled(user.id, out)
         return out
+
+    async def cancel_series(self, group_id: UUID, user: TelegramUser) -> list[BookingOut]:
+        rows = await self.bookings.cancel_future_in_group(
+            group_id=group_id,
+            telegram_id=user.id,
+        )
+        if not rows:
+            raise NotFoundError("Серия не найдена или уже завершена")
+        outs = [booking_to_out(b) for b in rows]
+        for out in outs:
+            await notify_booking_canceled(user.id, out)
+        return outs
+
+    async def check_in(self, booking_id: int, user: TelegramUser) -> BookingOut:
+        booking = await self.bookings.get_by_id(booking_id)
+        if booking is None or booking.canceled:
+            raise NotFoundError("Бронь не найдена")
+        if booking.telegram_id != user.id:
+            raise ForbiddenError("Нельзя подтвердить чужую бронь")
+        booking = await self.bookings.mark_checked_in(booking)
+        return booking_to_out(booking)

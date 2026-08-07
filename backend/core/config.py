@@ -35,6 +35,19 @@ class Settings(BaseSettings):
     # Tier 3 (optional NL booking) — empty = /book disabled, app still boots
     groq_api_key: str = ""
 
+    # Access: bootstrap first admin when users table is empty (0 = disabled)
+    bootstrap_admin_telegram_id: int = 0
+
+    # No-show auto-cancel
+    no_show_enabled: bool = True
+    no_show_window_minutes: int = 10
+
+    # Recurring bookings
+    max_recurring_weeks: int = 8
+
+    # Optional error monitoring
+    sentry_dsn: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

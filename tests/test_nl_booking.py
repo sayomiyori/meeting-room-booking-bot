@@ -81,6 +81,10 @@ async def test_book_ambiguous_text_fallback(monkeypatch):
         "bot.handlers.parse_booking_intent",
         lambda *_a, **_k: None,
     )
+    monkeypatch.setattr(
+        "bot.handlers._get_registered",
+        AsyncMock(return_value=SimpleNamespace(role="member")),
+    )
 
     rooms = [
         SimpleNamespace(id=1, name="Большая"),
@@ -125,6 +129,10 @@ async def test_book_valid_builds_webapp_query(monkeypatch):
         duration_minutes=60,
     )
     monkeypatch.setattr("bot.handlers.parse_booking_intent", lambda *_a, **_k: intent)
+    monkeypatch.setattr(
+        "bot.handlers._get_registered",
+        AsyncMock(return_value=SimpleNamespace(role="member")),
+    )
 
     rooms = [SimpleNamespace(id=7, name="Большая")]
 
@@ -175,6 +183,10 @@ async def test_book_without_groq_key(monkeypatch):
 
     monkeypatch.setenv("GROQ_API_KEY", "")
     get_settings.cache_clear()
+    monkeypatch.setattr(
+        "bot.handlers._get_registered",
+        AsyncMock(return_value=SimpleNamespace(role="member")),
+    )
 
     answers: list[str] = []
     message = MagicMock()

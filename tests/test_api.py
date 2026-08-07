@@ -64,6 +64,7 @@ async def db_engine(settings):
     engine = create_async_engine(settings.database_url, pool_pre_ping=True)
     async with engine.begin() as conn:
         await conn.execute(text("DELETE FROM bookings"))
+        await conn.execute(text("DELETE FROM users"))
         # Ensure the three seeded rooms exist (no Test Room)
         count = (await conn.execute(text("SELECT COUNT(*) FROM rooms"))).scalar_one()
         if count == 0:
@@ -77,9 +78,23 @@ async def db_engine(settings):
                     """
                 )
             )
+        # Whitelist test users (admin + members used across tests)
+        await conn.execute(
+            text(
+                """
+                INSERT INTO users (telegram_id, display_name, role) VALUES
+                (42, 'Admin', 'admin'),
+                (111, 'Member A', 'member'),
+                (222, 'Member B', 'member'),
+                (1001, 'Slot Tester', 'member')
+                ON CONFLICT (telegram_id) DO NOTHING
+                """
+            )
+        )
     yield engine
     async with engine.begin() as conn:
         await conn.execute(text("DELETE FROM bookings"))
+        await conn.execute(text("DELETE FROM users"))
     await engine.dispose()
 
 
@@ -115,7 +130,9 @@ async def room_id(client):
 async def test_health(client):
     res = await client.get("/health")
     assert res.status_code == 200
-    assert res.json()["status"] == "ok"
+    body = res.json()
+    assert body["status"] == "ok"
+    assert body["db"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -387,6 +404,7 @@ async def test_public_booking_config(client, settings):
     assert body["slot_step_minutes"] == settings.slot_step_minutes
     assert body["office_hours_start"] == settings.office_hours_start
     assert body["office_hours_end"] == settings.office_hours_end
+    assert body["max_recurring_weeks"] == settings.max_recurring_weeks
 
 
 @pytest.mark.asyncio

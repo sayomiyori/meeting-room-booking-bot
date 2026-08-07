@@ -50,9 +50,10 @@ async def main() -> None:
         }
 
         async def attempt(i: int) -> int:
+            # Same whitelisted user for all attempts — EXCLUDE is on room+during, not telegram_id
             res = await client.post(
                 "/api/bookings",
-                headers={"X-Debug-Telegram-Id": str(10_000 + i)},
+                headers={"X-Debug-Telegram-Id": "42"},
                 json=payload,
             )
             return res.status_code

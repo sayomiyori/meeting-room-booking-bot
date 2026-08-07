@@ -6,32 +6,55 @@ Telegram Mini App + FastAPI + PostgreSQL + aiogram 3 для бронирован
 
 ## Возможности
 
-- Список комнат и занятость на день (публичные слоты без PII)
+- Whitelist-доступ (таблица `users`) + роль admin; приглашение коллег через `/invite`
+- Список комнат и занятость на день (публичные слоты без PII); админ управляет комнатами через `/admin`
 - Бронирование 15 мин – 4 часа с защитой от гонок (PostgreSQL `EXCLUDE`)
+- Повтор еженедельно (2–8 недель) с пропуском занятых слотов и отменой всей серии
+- No-show: подтверждение присутствия в начале брони, автоотмена без check-in
 - Выбор конкретного времени внутри свободного интервала: начало с шагом 30 мин + длительность
 - Жёсткие рабочие часы 09:00–18:00 МСК как граница бронирования и слотов
 - Telegram Mini App с тёмным UI и flip-индикатором занятости
-- Бот: `/start`, `/book` — бронирование на естественном языке через Groq (`openai/gpt-oss-120b`), результат парсинга открывает Mini App на экране подтверждения с предзаполненным временем — пользователь всегда видит и может поправить перед реальным бронированием; `/mybookings` (отмена), `/help`, напоминания за N минут
+- Бот: `/start`, `/book` (NL через Groq), `/mybookings`, `/invite`, `/admin`, `/help`, напоминания
 - HMAC-валидация `initData` на каждый запрос к `/api/bookings*`
+- `/health` с проверкой БД; опционально Sentry
 
-## Быстрый старт
+## Быстрый старт (локально)
 
 Требования: Docker Desktop / Compose v2.
 
 ```bash
 cp .env.example .env
-# заполните BOT_TOKEN (можно временный для healthcheck), WEBHOOK_SECRET
+# заполните BOT_TOKEN, WEBHOOK_SECRET, BOOTSTRAP_ADMIN_TELEGRAM_ID (ваш Telegram id)
 docker compose up --build
 ```
 
-Откройте http://localhost:8001/health — должно быть `{"status":"ok"}` (хост-порт `8001`, контейнер слушает `8000`).
+Откройте http://localhost:8001/health — должно быть `{"status":"ok","db":"ok"}` (хост-порт `8001`, контейнер слушает `8000`).
 
-Mini App раздаётся с того же origin (`/`). Для Telegram нужен HTTPS `WEBAPP_URL` (туннель или домен Railway/Render). Локально в браузере: `DEBUG=true` и `VITE_DEBUG_TELEGRAM_ID=42` при `npm run dev` во `frontend/`.
+Mini App раздаётся с того же origin (`/`). Для Telegram в проде нужен постоянный HTTPS (`WEBAPP_URL` на Railway). Для локальной отладки без деплоя можно временно поднять туннель (cloudflared / ngrok) и прописать его в `WEBAPP_URL` + `PUBLIC_BASE_URL` — это опция разработки, не прод.
+
+Локально в браузере: `DEBUG=true` и `VITE_DEBUG_TELEGRAM_ID=<whitelist id>` при `npm run dev` во `frontend/`.
+
+## Приглашение пользователей (whitelist)
+
+Доступ не выдаётся автоматически на `/start`.
+
+1. Коллега пишет `/start` боту [@userinfobot](https://t.me/userinfobot) (или аналогу) и присылает вам свой числовой `Id`.
+2. Админ в боте бронирования: `/invite <telegram_id>`.
+3. После этого коллега может `/start` и бронировать.
+
+Первый админ создаётся при старте приложения, если таблица `users` пуста и задан `BOOTSTRAP_ADMIN_TELEGRAM_ID`.
 
 ## Модель данных
 
 ```mermaid
 erDiagram
+  users {
+    int id PK
+    bigint telegram_id UK
+    text display_name
+    text role
+    timestamptz created_at
+  }
   rooms ||--o{ bookings : has
   rooms {
     int id PK
@@ -39,6 +62,7 @@ erDiagram
     int capacity
     text photo_url
     text description
+    boolean active
   }
   bookings {
     bigint id PK
@@ -48,69 +72,68 @@ erDiagram
     tstzrange during
     boolean canceled
     boolean reminder_sent
+    boolean checked_in
+    boolean checkin_prompt_sent
+    boolean auto_canceled_notified
+    uuid recurring_group_id
     timestamptz created_at
   }
 ```
 
 Частичный `EXCLUDE USING gist (room_id WITH =, during WITH &&) WHERE (NOT canceled)` гарантирует отсутствие пересечений активных броней на уровне БД.
 
-Правила бронирования (office hours, timezone, шаг сетки, max duration) отдаются с бэкенда через `GET /api/config` — фронт их только отображает, без хардкода.
+Правила бронирования (office hours, timezone, шаг сетки, max duration, max recurring weeks) отдаются через `GET /api/config`.
 
 ## Почему так
 
 | Решение | Зачем |
 |--------|--------|
-| `EXCLUDE` + `btree_gist` | Гонки на один слот закрываются в Postgres, а не «optimistic check» в Python |
-| `tstzrange` UTC `[start, end)` | Одна ось времени, полуоткрытый интервал без споров на границе |
-| HMAC `initData` + `auth_date` ≤ 5 мин | `telegram_id` нельзя подделать из body; replay ограничен |
-| Same-origin StaticFiles | Mini App и API без CORS и без утечки bot token во frontend-бандл |
-| Слоты без имени/telegram_id | Публичное расписание не раскрывает, кто сидел в комнате |
-| LLM только парсит intent, не создаёт бронь напрямую | Модель может ошибиться на неоднозначном тексте; результат проходит через тот же pick/confirm экран и бизнес-валидацию, что и ручной ввод |
+| `EXCLUDE` + `btree_gist` | Гонки на один слот закрываются в Postgres |
+| Whitelist `users` | Офисный бот не должен быть открыт всему Telegram |
+| `rooms.active` soft-delete | История броней и FK остаются валидными |
+| No-show check-in | Освобождает комнату, если человек не пришёл |
+| `recurring_group_id` | Отмена серии без «батча без проверки» конфликтов |
+| HMAC `initData` + `auth_date` ≤ 5 мин | `telegram_id` нельзя подделать из body |
+| Same-origin StaticFiles | Mini App и API без CORS |
+| LLM только парсит intent | Подтверждение всегда через pick/confirm |
 
-## Аудит перед сдачей
+## Деплой на Railway (постоянный домен)
 
-Самостоятельный security и code-quality аудит перед сдачей (`review-security` + `sql-optimizer`). Устранено:
+Делается в UI Railway (не кодом):
 
-- misconfiguration debug-auth в `.env.example` (`DEBUG=false`, пустой `WEBHOOK_SECRET` вместо плейсхолдера)
-- partial-индексы GiST не матчились из-за `IS false` вместо `NOT canceled` (подтверждено `EXPLAIN ANALYZE`)
-- rate limit на `POST /telegram/webhook`
-- `redact_secrets` расширен на `DATABASE_URL` / webhook secret
-- удалён мёртвый код (неиспользуемые методы, схемы, зависимости)
+1. [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo** → выбрать репозиторий бота.
+2. **Add Postgres** plugin **или** (рекомендуется) внешний [Neon](https://neon.tech) — постоянный free tier без риска usage-billing Railway на БД. В `DATABASE_URL` используйте async-строку `postgresql+asyncpg://...`.
+3. **Variables** — скопируйте ключи из [.env.example](.env.example) с реальными значениями: `DATABASE_URL`, `BOT_TOKEN`, `WEBHOOK_SECRET`, `BOOTSTRAP_ADMIN_TELEGRAM_ID`, опционально `GROQ_API_KEY`, `SENTRY_DSN`. `DEBUG=false`.
+4. Railway выдаст постоянный HTTPS-домен вида `*.up.railway.app` — задайте его в `WEBAPP_URL` и `PUBLIC_BASE_URL`.
+5. Redeploy → проверьте `/health` → webhook зарегистрируется автоматически при старте (`setWebhook` на `{PUBLIC_BASE_URL}{WEBHOOK_PATH}`).
 
-Изначально для `/book` пробовали Gemini Flash, но provisioning API-ключа упёрся в новое требование Google Cloud (обязательная 2FA + нестабильный доступ к созданию проекта на момент тестирования) — переключились на Groq (`openai/gpt-oss-120b`); интерфейс сервиса абстрагирован, смена заняла менее часа.
+После этого cloudflared-туннель для постоянной работы не нужен.
+
+## Мониторинг в проде
+
+- Зарегистрируйте бесплатный [UptimeRobot](https://uptimerobot.com) HTTP(s) monitor на `{WEBAPP_URL}/health` с интервалом 5 минут. Ответ `{"status":"ok","db":"ok"}` и код 200; при недоступной БД — `503` и `"db":"error"`.
+- Опционально: [Sentry](https://sentry.io) free tier — задайте `SENTRY_DSN`; без него SDK не инициализируется.
 
 ## Переменные окружения
 
-См. [.env.example](.env.example). Секреты (`BOT_TOKEN`, `WEBHOOK_SECRET`, `DATABASE_URL`) только в `.env` / секретах платформы — не в git и не во frontend.
+См. [.env.example](.env.example). Секреты (`BOT_TOKEN`, `WEBHOOK_SECRET`, `DATABASE_URL`, `SENTRY_DSN`) только в `.env` / секретах платформы.
 
-Опционально: `GROQ_API_KEY` — без него `/book` отвечает «LLM-бронирование недоступно», остальной функционал не затронут. Ключ бесплатно без карты: [console.groq.com/keys](https://console.groq.com/keys).
-
-## Деплой (Railway / Render + Neon)
-
-1. Создайте БД на Neon, скопируйте async URL (`postgresql+asyncpg://...`).
-2. Задеплойте этот репозиторий на Railway/Render (Dockerfile уже multi-stage).
-3. Задайте env: `DATABASE_URL`, `BOT_TOKEN`, `WEBAPP_URL` (= HTTPS URL сервиса), `PUBLIC_BASE_URL` (тот же origin), `WEBHOOK_SECRET`, `DEBUG=false`, опционально `GROQ_API_KEY`.
-4. После деплоя бот вызовет `setWebhook` на `{PUBLIC_BASE_URL}{WEBHOOK_PATH}` с `secret_token`.
-
-Postgres в compose наружу не публикуется (`expose`, не `ports`) — в проде Neon и так вне compose.
+Опционально: `GROQ_API_KEY` — без него `/book` отвечает «LLM-бронирование недоступно».  
+Опционально: `SENTRY_DSN`.  
+`NO_SHOW_ENABLED=false` отключает check-in / автоотмену (например, для очень коротких броней в тестах).
 
 ## Тесты
 
 ```bash
-# поднять стек, затем:
 docker compose exec app pytest -q
 docker compose exec app python scripts/race_condition_test.py
-# с хоста (порт 8001):
-# $env:BASE_URL="http://127.0.0.1:8001"; python scripts/race_condition_test.py
 ```
-
-Скрипт гонки: N параллельных POST на один слот → ровно один `201`, остальные `409`.
 
 ## Структура
 
 ```
 backend/   FastAPI, модели, alembic, static Mini App
-bot/       aiogram handlers + webhook
+bot/       aiogram handlers + webhook + /admin FSM
 frontend/  Vite + React + Tailwind v4
 scripts/   entrypoint, race_condition_test.py
 ```

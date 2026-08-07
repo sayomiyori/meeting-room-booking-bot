@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -40,6 +41,10 @@ class BookingCreate(BaseModel):
     end: datetime
 
 
+class RecurringBookingCreate(BookingCreate):
+    weeks: int = Field(..., ge=2, le=8)
+
+
 class BookingOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -51,6 +56,17 @@ class BookingOut(BaseModel):
     end: datetime
     canceled: bool
     created_at: datetime
+    recurring_group_id: UUID | None = None
+
+
+class RecurringSkipped(BaseModel):
+    date: str
+    reason: str
+
+
+class RecurringBookingOut(BaseModel):
+    created: list[BookingOut]
+    skipped: list[RecurringSkipped]
 
 
 class BookingConfigOut(BaseModel):
@@ -63,3 +79,4 @@ class BookingConfigOut(BaseModel):
     max_duration_minutes: int
     slot_step_minutes: int
     soon_free_minutes: int
+    max_recurring_weeks: int

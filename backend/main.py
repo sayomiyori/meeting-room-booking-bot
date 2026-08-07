@@ -15,6 +15,7 @@ from backend.core.config import get_settings
 from backend.core.logging_safe import redact_secrets
 from backend.routers import bookings, config, health, rooms
 from backend.routers.bookings import limiter
+from backend.services.bootstrap import bootstrap_admin_user
 from backend.services.scheduler import start_scheduler, stop_scheduler
 from bot import webhook_router
 
@@ -23,9 +24,67 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 MEDIA_DIR = Path(__file__).resolve().parent / "media"
 
 
+def _init_sentry(dsn: str) -> None:
+    if not dsn:
+        return
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.starlette import StarletteIntegration
+
+    settings = get_settings()
+    sensitive_headers = {
+        "x-telegram-init-data",
+        "x-debug-telegram-id",
+        "x-telegram-bot-api-secret-token",
+        "authorization",
+        "cookie",
+    }
+
+    def before_send(event, _hint):
+        req = (event.get("request") or {})
+        headers = req.get("headers")
+        if isinstance(headers, dict):
+            for key in list(headers):
+                if key.lower() in sensitive_headers:
+                    headers[key] = "[REDACTED]"
+        # Scrub exception values / messages
+        for values in ((event.get("exception") or {}).get("values") or []):
+            raw = values.get("value")
+            if isinstance(raw, str):
+                values["value"] = redact_secrets(
+                    raw,
+                    settings.bot_token,
+                    webhook_secret=settings.webhook_secret,
+                    groq_api_key=settings.groq_api_key,
+                )
+        message = event.get("message")
+        if isinstance(message, str):
+            event["message"] = redact_secrets(
+                message,
+                settings.bot_token,
+                webhook_secret=settings.webhook_secret,
+                groq_api_key=settings.groq_api_key,
+            )
+        return event
+
+    sentry_sdk.init(
+        dsn=dsn,
+        integrations=[
+            StarletteIntegration(transaction_style="endpoint"),
+            FastApiIntegration(transaction_style="endpoint"),
+        ],
+        traces_sample_rate=0.0,
+        send_default_pii=False,
+        before_send=before_send,
+    )
+    logger.info("sentry_initialized")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    _init_sentry(settings.sentry_dsn)
+    await bootstrap_admin_user()
     start_scheduler()
 
     polling_task = None
@@ -129,7 +188,6 @@ def create_app() -> FastAPI:
     app.include_router(bookings.router)
     app.include_router(webhook_router)
 
-    # Room photos — mount before SPA catch-all at /
     if MEDIA_DIR.exists():
         app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 

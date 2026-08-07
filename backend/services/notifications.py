@@ -1,10 +1,12 @@
 from datetime import UTC, datetime
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import structlog
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from backend.core.config import Settings, get_settings
 from backend.core.logging_safe import redact_secrets
@@ -78,6 +80,7 @@ def _log_notify_failure(event: str, telegram_id: int, exc: Exception) -> None:
             str(exc),
             settings.bot_token,
             webhook_secret=settings.webhook_secret,
+            groq_api_key=settings.groq_api_key,
         ),
     )
 
@@ -124,3 +127,58 @@ async def notify_reminder(telegram_id: int, booking: BookingOut) -> None:
         )
     except Exception as exc:
         _log_notify_failure("failed_to_send_reminder", telegram_id, exc)
+
+
+async def notify_checkin_prompt(telegram_id: int, booking: BookingOut) -> None:
+    try:
+        bot = get_bot()
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Подтвердить присутствие",
+                        callback_data=f"checkin:{booking.id}",
+                    )
+                ]
+            ]
+        )
+        await bot.send_message(
+            chat_id=telegram_id,
+            text="Бронь началась. Вы в комнате?",
+            reply_markup=kb,
+        )
+    except Exception as exc:
+        _log_notify_failure("failed_to_send_checkin_prompt", telegram_id, exc)
+
+
+async def notify_auto_canceled(telegram_id: int, booking: BookingOut) -> None:
+    try:
+        bot = get_bot()
+        await bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "Бронь отменена автоматически — не было подтверждения присутствия.\n\n"
+                + format_booking_message(booking, title="Автоотмена")
+            ),
+        )
+    except Exception as exc:
+        _log_notify_failure("failed_to_send_auto_cancel", telegram_id, exc)
+
+
+async def notify_recurring_created(
+    telegram_id: int,
+    *,
+    created_count: int,
+    skipped_count: int,
+    group_id: UUID | None,
+) -> None:
+    try:
+        bot = get_bot()
+        text = f"Серия: создано {created_count}"
+        if skipped_count:
+            text += f", пропущено {skipped_count} (занято)"
+        if group_id:
+            text += f"\nID серии: {group_id}"
+        await bot.send_message(chat_id=telegram_id, text=text)
+    except Exception as exc:
+        _log_notify_failure("failed_to_send_recurring_notice", telegram_id, exc)

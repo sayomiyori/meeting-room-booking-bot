@@ -1,4 +1,5 @@
 from aiogram import Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Update
 from fastapi import APIRouter, Header, HTTPException, Request, status
 import hmac
@@ -6,10 +7,12 @@ import hmac
 from backend.core.config import get_settings
 from backend.routers.bookings import limiter
 from backend.services.notifications import get_bot
+from bot.admin import router as admin_router
 from bot.handlers import router as commands_router
 
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 dp.include_router(commands_router)
+dp.include_router(admin_router)
 
 webhook_router = APIRouter(tags=["telegram"])
 
