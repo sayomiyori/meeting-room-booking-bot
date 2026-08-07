@@ -145,6 +145,48 @@ async def test_parse_booking_intent_without_api_key(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reasoning_token_limit_error_is_logged(monkeypatch, caplog):
+    """Groq 400 (json_validate_failed / max tokens) → None + warning with full error."""
+    import logging
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    get_settings.cache_clear()
+
+    error_text = (
+        "Error code: 400 - Failed to generate JSON. "
+        "max completion tokens reached before generating a valid document "
+        "(json_validate_failed)"
+    )
+
+    class FakeCompletions:
+        async def create(self, **_kwargs):
+            raise RuntimeError(error_text)
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr("openai.AsyncOpenAI", lambda **_kwargs: FakeClient())
+
+    with caplog.at_level(logging.WARNING, logger="backend.services.nl_booking"):
+        result = await parse_booking_intent("большую завтра в 15 на час", _rooms())
+
+    assert result is None
+    joined = " ".join(r.message for r in caplog.records)
+    assert "nl_booking_parse_failed" in joined
+    assert "max completion tokens" in joined.lower()
+    assert "json_validate_failed" in joined.lower()
+
+
+@pytest.mark.asyncio
 async def test_parse_booking_intent_repeated_calls_no_loop_closed(monkeypatch, capsys):
     """Sequential /book-like calls must close AsyncOpenAI in-loop (no orphan aclose)."""
     monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
