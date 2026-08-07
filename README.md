@@ -2,7 +2,7 @@
 
 Telegram Mini App + FastAPI + PostgreSQL + aiogram 3 для бронирования переговорных.
 
-> Скриншот/GIF Mini App: добавьте в `docs/screenshot.png` после первого прогона в Telegram.
+> Живой бот: [@meeting_room_test_bot](https://t.me/meeting_room_test_bot) — доступ по приглашению, напишите /start и вышлите свой telegram_id для добавления в whitelist.
 
 ## Возможности
 
@@ -14,7 +14,8 @@ Telegram Mini App + FastAPI + PostgreSQL + aiogram 3 для бронирован
 - Выбор конкретного времени внутри свободного интервала: начало с шагом 30 мин + длительность
 - Жёсткие рабочие часы 09:00–18:00 МСК как граница бронирования и слотов
 - Telegram Mini App с тёмным UI и flip-индикатором занятости
-- Бот: `/start`, `/book` (NL через Groq), `/mybookings`, `/invite`, `/admin`, `/help`, напоминания
+- Бот: `/start`, `/mybookings`, `/invite`, `/admin`, `/help`, напоминания
+- `/book` (NL через Groq): если распознаны не все поля (комната/дата/время) — бот задаёт до 2 уточняющих вопросов по недостающим полям, без повторных LLM-вызовов; при неудаче — fallback на обычный флоу
 - HMAC-валидация `initData` на каждый запрос к `/api/bookings*`
 - `/health` с проверкой БД; опционально Sentry
 
@@ -96,10 +97,15 @@ erDiagram
 | HMAC `initData` + `auth_date` ≤ 5 мин | `telegram_id` нельзя подделать из body |
 | Same-origin StaticFiles | Mini App и API без CORS |
 | LLM только парсит intent | Подтверждение всегда через pick/confirm |
+| Уточняющий диалог вместо жёсткого fallback | Частичный NL-запрос ("забронируй малую") не должен требовать перезапуска — бот переспрашивает конкретное недостающее поле, максимум 2 раза, без лишних LLM-вызовов |
 
-## Деплой на Railway (постоянный домен)
+## Деплой (текущий)
 
-Делается в UI Railway (не кодом):
+Задеплоено на VPS (Amsterdam) с постоянным доменом через DuckDNS (бесплатный поддомен) + Let's Encrypt (DNS-01 challenge, сертификат вручную, автопродление не настроено — требует повторного `certbot certonly --manual` до 5 ноября 2026 или настройки `--manual-auth-hook`). nginx как reverse-proxy на порту 8443 (стандартные 80/443 заняты другими сервисами на этом сервере), Telegram принимает порт 8443 для webhook.
+
+## Альтернативный деплой (Railway + Neon)
+
+Не текущий рабочий инстанс — задокументированная опция, если нет VPS. Делается в UI Railway (не кодом):
 
 1. [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo** → выбрать репозиторий бота.
 2. **Add Postgres** plugin **или** (рекомендуется) внешний [Neon](https://neon.tech) — постоянный free tier без риска usage-billing Railway на БД. В `DATABASE_URL` используйте async-строку `postgresql+asyncpg://...`.
