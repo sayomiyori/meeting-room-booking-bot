@@ -47,6 +47,8 @@ def test_match_room_partial_cases():
     names = ["Большая", "Малая", "Коворкинг"]
     assert match_room_name("малую", names) == "Малая"
     assert match_room_name("Малая", names) == "Малая"
+    assert match_room_name("Малую", names) == "Малая"
+    assert match_room_name("МАЛУЮ", names) == "Малая"
     assert match_room_name("больш", names) == "Большая"
     assert match_room_name("xyz", names) is None
 
@@ -55,6 +57,8 @@ def test_parse_date_relative():
     today = date(2026, 8, 7)
     assert parse_clarification_date("сегодня", today=today) == "2026-08-07"
     assert parse_clarification_date("завтра", today=today) == "2026-08-08"
+    assert parse_clarification_date("Завтра", today=today) == "2026-08-08"
+    assert parse_clarification_date("ЗАВТРА", today=today) == "2026-08-08"
     assert parse_clarification_date("послезавтра", today=today) == "2026-08-09"
     assert parse_clarification_date("15 августа", today=today) == "2026-08-15"
     assert parse_clarification_date("15.08", today=today) == "2026-08-15"
@@ -200,6 +204,90 @@ async def test_clarification_tomorrow_then_time_builds_webapp(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_capitalized_zavtra_recognized_as_date(monkeypatch):
+    """'Завтра' must parse — not a silent miss."""
+    monkeypatch.setattr(
+        "bot.book_clarify._get_registered",
+        AsyncMock(return_value=SimpleNamespace(role="member")),
+    )
+
+    class FakeRoomService:
+        def __init__(self, _s):
+            pass
+
+        async def list_rooms(self):
+            return _rooms()
+
+    class FakeBookingService:
+        def __init__(self, _s):
+            pass
+
+        def validate_window(self, start, end):
+            return start, end
+
+    monkeypatch.setattr("bot.book_clarify.RoomService", FakeRoomService)
+    monkeypatch.setattr("bot.book_clarify.BookingService", FakeBookingService)
+    monkeypatch.setattr("bot.book_clarify.async_session_factory", lambda: _FakeSession())
+
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=1, user_id=1))
+    answers: list[str] = []
+    message = MagicMock()
+    message.from_user = MagicMock(id=1)
+    message.answer = AsyncMock(side_effect=lambda text, **_k: answers.append(text))
+
+    intent = ParsedIntent(room="Малая", date=None, start_time=None, duration_minutes=60)
+    await start_clarification(message, state, intent, [r.name for r in _rooms()])
+    assert "дату" in answers[-1].casefold()
+
+    message.text = "Завтра"
+    await on_clarification_answer(message, state)
+    assert answers[-1]
+    assert "не понял" not in answers[-1].casefold()
+    assert "во сколько" in answers[-1].casefold()
+    data = await state.get_data()
+    assert data["partial_intent"]["date"] is not None
+    assert data["missing_field"] == "start_time"
+
+
+@pytest.mark.asyncio
+async def test_bad_date_answer_shows_ne_ponyal_and_decrements(monkeypatch):
+    monkeypatch.setattr(
+        "bot.book_clarify._get_registered",
+        AsyncMock(return_value=SimpleNamespace(role="member")),
+    )
+
+    class FakeRoomService:
+        def __init__(self, _s):
+            pass
+
+        async def list_rooms(self):
+            return _rooms()
+
+    monkeypatch.setattr("bot.book_clarify.RoomService", FakeRoomService)
+    monkeypatch.setattr("bot.book_clarify.async_session_factory", lambda: _FakeSession())
+
+    storage = MemoryStorage()
+    state = FSMContext(storage=storage, key=StorageKey(bot_id=1, chat_id=2, user_id=2))
+    answers: list[str] = []
+    message = MagicMock()
+    message.from_user = MagicMock(id=2)
+    message.answer = AsyncMock(side_effect=lambda text, **_k: answers.append(text))
+
+    intent = ParsedIntent(room="Малая", date=None, start_time=None, duration_minutes=60)
+    await start_clarification(message, state, intent, [r.name for r in _rooms()])
+    before = (await state.get_data())["attempts_left"]
+
+    message.text = "ерунда какая-то"
+    await on_clarification_answer(message, state)
+
+    assert answers[-1].startswith("Не понял дату")
+    assert "завтра" in answers[-1].casefold()
+    after = (await state.get_data())["attempts_left"]
+    assert after == before - 1
+
+
+@pytest.mark.asyncio
 async def test_clarification_two_bad_answers_fallback(monkeypatch):
     monkeypatch.setattr(
         "bot.book_clarify._get_registered",
@@ -235,7 +323,7 @@ async def test_clarification_two_bad_answers_fallback(monkeypatch):
 
     message.text = "абракадабра1"
     await on_clarification_answer(message, state)
-    assert "комнат" in answers[-1].casefold()
+    assert answers[-1].startswith("Не понял")
 
     message.text = "абракадабра2"
     await on_clarification_answer(message, state)

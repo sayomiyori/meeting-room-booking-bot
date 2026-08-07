@@ -61,6 +61,12 @@ _WEEKDAYS_RU: dict[str, int] = {
 }
 
 
+def normalize_user_text(text: str) -> str:
+    """Lowercase + strip for case-insensitive keyword / room matching."""
+    raw = (text or "").replace("\u00a0", " ").lower().strip()
+    return raw.strip(".,!?;:\"'«»")
+
+
 def apply_duration_default(intent: ParsedIntent, default: int = 60) -> ParsedIntent:
     if intent.duration_minutes is None:
         return intent.model_copy(update={"duration_minutes": default})
@@ -69,24 +75,23 @@ def apply_duration_default(intent: ParsedIntent, default: int = 60) -> ParsedInt
 
 def match_room_name(text: str, room_names: Sequence[str]) -> str | None:
     """Case-insensitive / substring / short-stem match against active room names."""
-    raw = (text or "").strip()
-    if not raw:
+    needle = normalize_user_text(text)
+    if not needle:
         return None
-    needle = raw.casefold()
-    # Exact first
     for name in room_names:
-        if name.casefold() == needle:
+        if name.lower().strip() == needle:
             return name
-    # Substring either way
-    hits = [name for name in room_names if name.casefold() in needle or needle in name.casefold()]
+    hits = [
+        name
+        for name in room_names
+        if name.lower() in needle or needle in name.lower()
+    ]
     if len(hits) == 1:
         return hits[0]
     if len(hits) > 1:
-        # Prefer longest room name match
         return max(hits, key=lambda n: len(n))
-    # Stem: shared prefix of length >= 3 (малую ↔ Малая)
     for name in room_names:
-        n = name.casefold()
+        n = name.lower()
         for length in range(min(len(n), len(needle), 6), 2, -1):
             if n[:length] == needle[:length]:
                 return name
@@ -98,7 +103,7 @@ def parse_clarification_date(text: str, *, today: date | None = None) -> str | N
     settings = get_settings()
     tz = ZoneInfo(settings.office_timezone)
     today = today or datetime.now(tz).date()
-    raw = (text or "").strip().casefold()
+    raw = normalize_user_text(text)
     if not raw:
         return None
 
@@ -149,7 +154,7 @@ def parse_clarification_date(text: str, *, today: date | None = None) -> str | N
 
 def parse_clarification_time(text: str) -> str | None:
     """Parse HH:MM / H:MM / 'в HH' → HH:MM."""
-    raw = (text or "").strip().casefold()
+    raw = normalize_user_text(text)
     if not raw:
         return None
     raw = re.sub(r"^в\s+", "", raw)
@@ -198,6 +203,16 @@ def clarification_question(field: MissingField, room_names: Sequence[str]) -> st
     if field == "date":
         return "На какую дату? (например: завтра, 15 августа)"
     return "Во сколько? (например: 15:00)"
+
+
+def clarification_not_understood(field: MissingField, room_names: Sequence[str]) -> str:
+    """Always-visible retry prompt when the user's answer did not parse."""
+    if field == "room":
+        names = ", ".join(room_names) if room_names else "—"
+        return f"Не понял комнату. Напишите одну из: {names}"
+    if field == "date":
+        return "Не понял дату. Напишите, например: завтра, 15 августа"
+    return "Не понял время. Напишите, например: 15:00"
 
 
 def apply_clarification_answer(

@@ -19,6 +19,7 @@ from backend.services.book_clarification import (
     CLARIFICATION_TIMEOUT_SECONDS,
     apply_clarification_answer,
     apply_duration_default,
+    clarification_not_understood,
     clarification_question,
     first_missing_field,
     resolve_room_canonical,
@@ -157,12 +158,27 @@ async def finish_book_from_intent(
 @router.message(
     StateFilter(BookingClarification.awaiting_clarification),
     F.text,
-    ~F.text.startswith("/"),
 )
 async def on_clarification_answer(message: Message, state: FSMContext) -> None:
+    """Handle clarification replies. Always answer — never swallow a failed parse."""
     if message.from_user is None:
         return
-    if await _get_registered(message.from_user.id) is None:
+    # Let command handlers own slash-commands (they clear clarification state).
+    if (message.text or "").startswith("/"):
+        return
+
+    try:
+        await _handle_clarification_answer(message, state)
+    except Exception:
+        import structlog
+
+        structlog.get_logger(__name__).exception("clarification_handler_failed")
+        await state.clear()
+        await message.answer(FALLBACK_PARSE)
+
+
+async def _handle_clarification_answer(message: Message, state: FSMContext) -> None:
+    if await _get_registered(message.from_user.id) is None:  # type: ignore[union-attr]
         await state.clear()
         await message.answer(ACCESS_DENIED)
         return
@@ -209,7 +225,7 @@ async def on_clarification_answer(message: Message, state: FSMContext) -> None:
             attempts_left=attempts_left - 1,
             asked_at=datetime.now(UTC).isoformat(),
         )
-        await message.answer(clarification_question(missing, room_names))
+        await message.answer(clarification_not_understood(missing, room_names))
         return
 
     next_missing = first_missing_field(apply_duration_default(updated))
